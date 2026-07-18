@@ -1,0 +1,85 @@
+{
+    "content": {
+        "functionName": "bool MotionModel<StateSize, MeasurementSize>::predictState(const rclcpp::Time & time)",
+        "functionCodeLine": "bool MotionModel<StateSize, MeasurementSize>::predictState(const rclcpp::Time & time)",
+        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+        "functionCodeContent": "bool MotionModel<StateSize, MeasurementSize>::predictState(const rclcpp::Time & time)\n{\n  // check if the state is initialized\n  if (!checkInitialized()) return false;\n\n  const double dt = getDeltaTime(time);\n  if (dt < 0.0) {\n    return false;\n  }\n  if (dt < 1e-6 /*1usec*/) {\n    return true;\n  }\n\n  // Optimized: Use integer arithmetic for better performance\n  const uint32_t repeat = static_cast<uint32_t>(std::floor(dt / dt_max_)) + 1;\n  const double dt_ = dt / static_cast<double>(repeat);\n\n  // Optimized: Pre-allocate time increment to avoid repeated calculations\n  const rclcpp::Duration dt_duration = rclcpp::Duration::from_seconds(dt_);\n\n  for (uint32_t i = 0; i < repeat; ++i) {\n    if (!predictStateStep(dt_, ekf_)) return false;\n    last_update_time_ += dt_duration;\n  }\n  // reset the last_update_time_ to the prediction time\n  last_update_time_ = time;\n  return true;\n}",
+        "id": "0d1a291ce728647ea2d019cb"
+    },
+    "children": [
+        {
+            "content": {
+                "functionName": "checkInitialized",
+                "functionCodeLine": "  if (!checkInitialized()) return false;",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                "comment": "95 | EKF 状態が初期化済みかを確認し、未初期化なら予測処理を行わずに false を返す安全チェック。",
+                "id": "013d270ed9ea8fb66d14dcdc",
+                "functionCodeContent": "  bool checkInitialized() const noexcept { return is_initialized_; }"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "checkInitialized",
+                        "functionCodeLine": "  bool checkInitialized() const noexcept { return is_initialized_; }",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                        "comment": "40 | モーションモデル内部のフラグ is_initialized_ を返すゲッターで、predictState を呼ぶ前にモデルが初期化済みかどうかを判定するために使われる。",
+                        "id": "3a1259347586531c4a930884"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "getDeltaTime",
+                "functionCodeLine": "  const double dt = getDeltaTime(time);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                "comment": "93 | 前回更新時刻からの経過時間 dt を計算する。負値や極小値判定の基となり、予測ステップ長を決定する重要処理。",
+                "id": "d953446444d498129432095a",
+                "functionCodeContent": "  double getDeltaTime(const rclcpp::Time & time) const noexcept\n  {\n    return (time - last_update_time_).seconds();\n  }"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "getDeltaTime",
+                        "functionCodeLine": "  double getDeltaTime(const rclcpp::Time & time) const noexcept",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                        "comment": "92 | 入力された時刻とメンバ変数 last_update_time_ の差分を rclcpp::Duration として取得し、その秒数を double で返す。predictState() ではこのΔtを用いて状態遷移行列やノイズ分散を時間スケールに合わせるため、最初に呼ばれる基礎関数。",
+                        "id": "0aaf10fcf4da956824df6f72"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "std::floor",
+                "functionCodeLine": "  const uint32_t repeat = static_cast<uint32_t>(std::floor(dt / dt_max_)) + 1;",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                "comment": "80 | dt を最大ステップ長 dt_max_ で割り、切り捨てて繰り返し回数 repeat を求める。大きな dt を複数のサブステップへ分割するための鍵となる計算。",
+                "id": "771a90fd8c7b967c1404ac35"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "rclcpp::Duration::from_seconds",
+                "functionCodeLine": "  const rclcpp::Duration dt_duration = rclcpp::Duration::from_seconds(dt_);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                "comment": "85 | サブステップ幅 dt_ を ROS2 の Duration 型に変換し、内部時刻 last_update_time_ を簡潔にインクリメントできるようにする。",
+                "id": "fd083c45c2530c0bd58173f8"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "predictStateStep",
+                "functionCodeLine": "    if (!predictStateStep(dt_, ekf_)) return false;",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_multi_object_tracker/include/autoware/multi_object_tracker/tracker/motion_model/motion_model_base.hpp",
+                "comment": "98 | 各サブステップで EKF の状態遷移モデルを適用し、状態ベクトルと共分散を前進予測するコア処理。失敗時は即座に false を返しループを中断する。",
+                "id": "d4f8586e76a519e68005d88e"
+            },
+            "children": []
+        }
+    ]
+}
