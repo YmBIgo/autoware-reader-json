@@ -1,0 +1,402 @@
+{
+    "content": {
+        "functionName": "void GridProcessor::processLanelets(",
+        "functionCodeLine": "void GridProcessor::processLanelets(",
+        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+        "functionCodeContent": "void GridProcessor::processLanelets(\n  const lanelet::LaneletMapPtr & lanelet_map, double sampling_distance, int extension_size,\n  const std::string & cache_directory)\n{\n  if (!lanelet_map) {\n    return;\n  }\n\n  std::string cache_filename =\n    generateCacheFilename(lanelet_map, sampling_distance, extension_size, cache_directory);\n\n  if (loadGridFromCache(cache_filename)) {\n    RCLCPP_DEBUG(logger_, \"Loaded grid from cache: %s\", cache_filename.c_str());\n    return;\n  }\n\n  RCLCPP_DEBUG(logger_, \"Cache miss, generating new grid...\");\n  reset();\n\n  // First, process all lanelets to generate map from original points\n  for (const auto & lanelet : lanelet_map->laneletLayer) {\n    processLaneletBoundary(lanelet);\n  }\n\n  processPointsToStatistics();\n\n  fillEmptyGrids(extension_size);\n\n  finalizeGridMemory();\n\n  // Save to cache for future use\n  saveGridToCache(cache_filename);\n}",
+        "id": "7f8e9c359bb677450f7400d9"
+    },
+    "children": [
+        {
+            "content": {
+                "functionName": "loadGridFromCache",
+                "functionCodeLine": "  if (loadGridFromCache(cache_filename)) {",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "60 | 既存キャッシュからグリッドを読み込み、フィルタ処理（グリッド統計計算・穴埋めなど）を省略して高速化する。キャッシュ命中時は以降のフィルタ用計算がスキップされるため、フィルタ機構全体の入口判定として機能する。",
+                "id": "1f480757208e2d92c2ecd8cc",
+                "functionCodeContent": "bool GridProcessor::loadGridFromCache(const std::string & cache_filename)\n{\n  std::ifstream file(cache_filename, std::ios::binary);\n  if (!file.is_open()) {\n    return false;\n  }\n\n  try {\n    grid_cells_.clear();\n    elevation_cache_.clear();  // Clear interpolation cache when loading new grid data\n\n    // Read number of grid cells\n    size_t num_cells;\n    file.read(reinterpret_cast<char *>(&num_cells), sizeof(num_cells));\n\n    if (file.fail()) {\n      file.close();\n      return false;\n    }\n\n    // Read each grid cell\n    for (size_t i = 0; i < num_cells; ++i) {\n      GridIndex index;\n      file.read(reinterpret_cast<char *>(&index.x), sizeof(index.x));\n      file.read(reinterpret_cast<char *>(&index.y), sizeof(index.y));\n\n      GridCell cell;\n      char height_buffer[sizeof(double)];\n      file.read(height_buffer, sizeof(height_buffer));\n      memcpy(&cell.average_height, height_buffer, sizeof(cell.average_height));\n      file.read(reinterpret_cast<char *>(&cell.is_valid), sizeof(cell.is_valid));\n\n      if (file.fail()) {\n        file.close();\n        return false;\n      }\n\n      // We don't need to store the individual points, just the statistics\n      grid_cells_[index] = cell;\n    }\n\n    file.close();\n    return true;\n  } catch (const std::exception & e) {\n    file.close();\n    return false;\n  }\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "file.is_open",
+                        "functionCodeLine": "  if (!file.is_open()) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "85 | キャッシュファイルが正常に開けたかをチェックし、開けなかった場合は即座に false を返して以降の処理（フィルタのためのグリッド読み込み）をスキップする。",
+                        "id": "ffa52240f2192ec6bc1f289a"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "grid_cells_.clear",
+                        "functionCodeLine": "    grid_cells_.clear();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "83 | 新しいキャッシュを読み込む前に既存のグリッドセル情報を初期化し、前回フィルタ処理で使った残骸を残さないようにする。",
+                        "id": "cc2bdb975457640ed13673c8"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "file.read",
+                        "functionCodeLine": "    file.read(reinterpret_cast<char *>(&num_cells), sizeof(num_cells));",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "90 | バイナリファイルからセル数（num_cells）を読み取り、以降のループ回数を決定する。ここで誤読するとフィルタ向けグリッドが正しく生成できない。",
+                        "id": "e62203523336af4c99c2e1fe"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "memcpy",
+                        "functionCodeLine": "      memcpy(&cell.average_height, height_buffer, sizeof(cell.average_height));",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "88 | 読み込んだ高さデータをバイト列から double へコピーして平均高度に格納する。LaneletElevationFilter がグリッド高さを参照するための要となる。",
+                        "id": "462c05cd456bcf9ad0eaeed0"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "file.fail",
+                        "functionCodeLine": "      if (file.fail()) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "87 | 読み込みに失敗した時点でファイルを閉じ false を返し、誤ったグリッドデータがフィルタ処理に渡ることを防止する。",
+                        "id": "586f2e146ad48877ce75e55e"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "processLaneletBoundary",
+                "functionCodeLine": "    processLaneletBoundary(lanelet);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "80 | 各レーンレット境界上の点をサンプリングしグリッドに投入する。後段で行う統計ベースの標高フィルタリングの元データを生成する最初の処理。",
+                "functionCodeContent": "void GridProcessor::processLaneletBoundary(const lanelet::Lanelet & lanelet)\n{\n  double sampling_distance = grid_resolution_ * 0.5;\n\n  // Sample points from left boundary\n  auto left_points = samplePointsFromLineString(lanelet.leftBound(), sampling_distance);\n  for (const auto & point : left_points) {\n    addPointToGrid(point.x, point.y, point.z);\n  }\n\n  // Sample points from right boundary\n  auto right_points = samplePointsFromLineString(lanelet.rightBound(), sampling_distance);\n  for (const auto & point : right_points) {\n    addPointToGrid(point.x, point.y, point.z);\n  }\n\n  // Sample points from centerline if available\n  if (lanelet.hasAttribute(lanelet::AttributeName::Subtype)) {\n    auto centerline = lanelet.centerline();\n    auto center_points = samplePointsFromLineString(centerline, sampling_distance);\n    for (const auto & point : center_points) {\n      addPointToGrid(point.x, point.y, point.z);\n    }\n  }\n}",
+                "id": "509f35fc244faa78453a0771"
+            },
+            "children": [
+        {
+            "content": {
+                "functionName": "samplePointsFromLineString",
+                "functionCodeLine": "  auto left_points = samplePointsFromLineString(lanelet.leftBound(), sampling_distance);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "95 | Lanelet の LineString（ここでは左境界）を指定間隔でサンプリングし、標高付きの点列を生成する。フィルタリングの入力点集合を作る最重要処理。",
+                "functionCodeContent": "std::vector<geometry_msgs::msg::Point> GridProcessor::samplePointsFromLineString(\n  const lanelet::ConstLineString3d & linestring, double sampling_distance)\n{\n  std::vector<geometry_msgs::msg::Point> sampled_points;\n\n  if (linestring.size() < 2) {\n    return sampled_points;\n  }\n\n  for (size_t i = 0; i < linestring.size() - 1; ++i) {\n    const auto & start_point = linestring[i];\n    const auto & end_point = linestring[i + 1];\n\n    double dx = end_point.x() - start_point.x();\n    double dy = end_point.y() - start_point.y();\n    double dz = end_point.z() - start_point.z();\n    double segment_length = std::sqrt(dx * dx + dy * dy);\n\n    if (segment_length < 1e-6) {\n      continue;\n    }\n\n    int num_samples = static_cast<int>(segment_length / sampling_distance) + 1;\n\n    double inv_num_samples = 1 / num_samples;\n    for (int j = 0; j <= num_samples; ++j) {\n      double ratio = static_cast<double>(j) * inv_num_samples;\n\n      geometry_msgs::msg::Point point;\n      point.x = start_point.x() + ratio * dx;\n      point.y = start_point.y() + ratio * dy;\n      point.z = start_point.z() + ratio * dz;\n\n      sampled_points.push_back(point);\n    }\n  }\n\n  return sampled_points;\n}",
+                "id": "83cfcd9412050f7198633587"
+            },
+            "children": [
+        {
+            "content": {
+                "functionName": "linestring.size",
+                "functionCodeLine": "  if (linestring.size() < 2) {",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "90 | 入力 lanelet::ConstLineString3d の頂点数を取得し、2 点未満ならサンプリング不能として空のベクタを即返す。フィルタ処理の前提条件を担保する初期チェック。",
+                "id": "7bfc1367d1aa7567e9610a4b"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "std::sqrt",
+                "functionCodeLine": "    double segment_length = std::sqrt(dx * dx + dy * dy);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "85 | 隣接 2 点間の 2 次元距離を平方根で算出し、サンプリング間隔と照合してサンプル数を決めるための基礎データを生成する。",
+                "id": "8df0415b88527d64bab48b46"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "static_cast<int>",
+                "functionCodeLine": "    int num_samples = static_cast<int>(segment_length / sampling_distance) + 1;",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "70 | 実数のセグメント長／サンプリング間隔を整数に切り上げ変換し、補間ループ回数（サンプル数）を決定する。離散化の肝となるキャスト処理。",
+                "id": "e3fe6688a3d0f9c271c86272"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "sampled_points.push_back",
+                "functionCodeLine": "      sampled_points.push_back(point);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "80 | 線形補間で得た各サンプル点を結果コンテナへ順次格納し、後段フィルタ（高度フィルタ）で利用可能にする。",
+                "id": "7f5aeddf348b12822b98175b"
+            },
+            "children": []
+        }
+    ]
+        },
+        {
+            "content": {
+                "functionName": "addPointToGrid",
+                "functionCodeLine": "    addPointToGrid(point.x, point.y, point.z);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "97 | サンプリングされた各点を高さ方向の統計グリッド（Elevation Grid）に書き込む。フィルタが地図起因の段差を除去するための内部データ構造を形成する核心部分。",
+                "functionCodeContent": "void GridProcessor::addPointToGrid(double x, double y, double z)\n{\n  GridIndex index = getGridIndex(x, y);\n\n  auto it = grid_cells_.find(index);\n  if (it == grid_cells_.end()) {\n    grid_cells_[index] = GridCell();\n  }\n\n  geometry_msgs::msg::Point point;\n  point.x = x;\n  point.y = y;\n  point.z = z;\n\n  grid_cells_[index].points.push_back(point);\n}",
+                "id": "13fd550d3afc0663c3acb8cc"
+            },
+            "children": [
+        {
+            "content": {
+                "functionName": "getGridIndex",
+                "functionCodeLine": "  GridIndex index = getGridIndex(x, y);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "85 | 入力された (x, y) 座標をどのグリッドセルに属させるかを計算する。LaneletElevationFilter ではグリッドごとに標高統計を取り、外れ値を除去するため、このインデックス計算がフィルタ処理の基盤となる。",
+                "id": "9d36dbfbff0840ae6b6d2432",
+                "functionCodeContent": "GridIndex GridProcessor::getGridIndex(double x, double y) const\n{\n  GridIndex index;\n  index.x = static_cast<int>(x * inv_grid_resolution_);\n  index.y = static_cast<int>(y * inv_grid_resolution_);\n\n  if (x < 0.0 && (x * inv_grid_resolution_) != index.x) index.x--;\n  if (y < 0.0 && (y * inv_grid_resolution_) != index.y) index.y--;\n\n  return index;\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "GridProcessor::getGridIndex",
+                        "functionCodeLine": "GridIndex GridProcessor::getGridIndex(double x, double y) const",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "96 | 実座標 (x, y) をグリッド解像度でスケールして格子インデックス (int) に変換し、負側座標でも数学的な floor と同等になるよう補正して返す。LaneletElevationFilterComponent が点をボクセル化／セル化する際の基本ユーティリティであり、filter 処理で『どのグリッドに属するか』を決める要となる。",
+                        "id": "731e08b684c131aeaf9aac21"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "grid_cells_.find",
+                "functionCodeLine": "  auto it = grid_cells_.find(index);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "78 | 計算したインデックスに対応するセルがすでに存在するかを検索し、なければ新規生成するための判定を行う。セル単位で標高フィルタを適用する設計上、既存セル検出の有無は重要。",
+                "id": "24ecc77b7ef625569faec848"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "grid_cells_[index] = GridCell()",
+                "functionCodeLine": "    grid_cells_[index] = GridCell();",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "72 | 検索でセルが見つからなかった場合に空の GridCell を作成して登録する。標高統計を保持するコンテナの初期化に相当し、後続のフィルタで平均・分散などを計算する準備を行う。",
+                "id": "6676c8f8b2769b235e336a90"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "grid_cells_[index].points.push_back",
+                "functionCodeLine": "  grid_cells_[index].points.push_back(point);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "80 | 生成／取得したグリッドセルへ点を追加する。セルに点群を貯めこみ、その後の標高フィルタリング（外れ値除去や中央値計算）の対象データ集合を形成する重要なステップ。",
+                "id": "0fbbfddeb5926429ef0a9dfe"
+            },
+            "children": []
+        }
+    ]
+        },
+        {
+            "content": {
+                "functionName": "lanelet.hasAttribute",
+                "functionCodeLine": "  if (lanelet.hasAttribute(lanelet::AttributeName::Subtype)) {",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "83 | Lanelet にセンターライン（Subtype 属性）が存在するかを判定し、存在する場合のみ標高サンプリングを実施する分岐。不要な計算を省きフィルタ精度を保つためのガード。",
+                "id": "86252ebc7bad514199f2727f"
+            },
+            "children": []
+        },
+        {
+            "content": {
+                "functionName": "lanelet.centerline",
+                "functionCodeLine": "    auto centerline = lanelet.centerline();",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "80 | Lanelet のセンターラインを取得するメソッド。取得した LineString をさらにサンプリングしてグリッドに取り込むことで、車線中央の標高情報もフィルタへ供給する。",
+                "id": "430d4d0f79f236e7141633b5"
+            },
+            "children": []
+        }
+    ]
+        },
+        {
+            "content": {
+                "functionName": "processPointsToStatistics",
+                "functionCodeLine": "  processPointsToStatistics();",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "92 | 境界点が入ったグリッドごとに平均・分散・中央値などの統計量を算出し、外れ値除去やノイズ抑制のためのコアフィルタを実行する部分。LaneletElevationFilterComponent のフィルタロジックの中心。",
+                "id": "ff7f3d64f07e2c74d1fe77df",
+                "functionCodeContent": "void GridProcessor::processPointsToStatistics()\n{\n  for (auto & [index, cell] : grid_cells_) {\n    if (cell.points.empty()) {\n      continue;\n    }\n\n    double sum_z = 0.0;\n    const size_t num_points = cell.points.size();\n\n    for (size_t i = 0; i < num_points; ++i) {\n      sum_z += cell.points[i].z;\n    }\n\n    cell.average_height = sum_z / num_points;\n    cell.is_valid = true;\n    cell.points.clear();\n  }\n\n  elevation_cache_.clear();\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "grid_cells_",
+                        "functionCodeLine": "  for (auto & [index, cell] : grid_cells_) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "85 | 比較対象マップセル全体を対象に反復処理を開始するループで、フィルタリング・統計計算のエントリポイントとなる。",
+                        "id": "eca45c6fa2119986372635d9"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cell.points.empty",
+                        "functionCodeLine": "    if (cell.points.empty()) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "95 | セル内に点が無い場合は早期 continue して無駄な計算を避けるフィルタリング処理を行う。",
+                        "id": "d319a660197ab406fc3f5ae5"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cell.points.size",
+                        "functionCodeLine": "    const size_t num_points = cell.points.size();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "90 | セル内ポイント数を取得し、平均高さ算出の除数およびループ上限として利用する。",
+                        "id": "939d134c31811d96fbb3b7d9"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cell.points.clear",
+                        "functionCodeLine": "    cell.points.clear();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "88 | 平均値計算後にセル内の点群を解放することでメモリを削減し、次のフレーム計算時に古いデータが残らないようにする。",
+                        "id": "1fc72ff4ebf1b17201d9d678"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "elevation_cache_.clear",
+                        "functionCodeLine": "  elevation_cache_.clear();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "92 | 全セル処理完了後に標高キャッシュをリセットし、次回フィルタ実行時に過去データが干渉しないようにする。",
+                        "id": "8868a5e0d5ec96dfc0fa97ce"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "fillEmptyGrids",
+                "functionCodeLine": "  fillEmptyGrids(extension_size);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "85 | 統計計算でデータが不足したセルを周囲の値で補完し、標高グリッドの空洞を埋める。フィルタ結果を連続的なサーフェスとして扱えるようにする補助的フィルタ工程。",
+                "id": "155258591db99bef7f56b934",
+                "functionCodeContent": "void GridProcessor::fillEmptyGrids(int extension_radius)\n{\n  // Get all current valid grid cells (original points)\n  std::vector<GridIndex> original_indices;\n  for (const auto & [index, cell] : grid_cells_) {\n    if (cell.is_valid) {\n      original_indices.push_back(index);\n    }\n  }\n\n  const size_t MAX_GRID_CELLS = 1000000;\n  const size_t MAX_CELLS_PER_RADIUS = 100000;\n  const size_t MAX_TOTAL_EXTENSIONS = 500000;\n\n  size_t total_extensions_added = 0;\n\n  for (int radius = 1; radius <= extension_radius; ++radius) {\n    size_t cells_added_this_radius = 0;\n    bool radius_limit_reached = false;\n\n    for (const auto & center_index : original_indices) {\n      if (radius_limit_reached) {\n        break;\n      }\n\n      if (grid_cells_.size() > MAX_GRID_CELLS) {\n        RCLCPP_WARN(\n          logger_, \"Grid size limit reached (%zu cells), stopping extension at radius %d\",\n          grid_cells_.size(), radius);\n        return;\n      }\n\n      if (total_extensions_added > MAX_TOTAL_EXTENSIONS) {\n        RCLCPP_WARN(\n          logger_, \"Total extension limit reached (%zu extensions), stopping at radius %d\",\n          total_extensions_added, radius);\n        return;\n      }\n\n      // Fill cells at current radius distance\n      for (int dx = -radius; dx <= radius && !radius_limit_reached; ++dx) {\n        for (int dy = -radius; dy <= radius && !radius_limit_reached; ++dy) {\n          if (std::abs(dx) + std::abs(dy) != radius) continue;\n\n          GridIndex extended_index;\n          extended_index.x = center_index.x + dx;\n          extended_index.y = center_index.y + dy;\n\n          auto it = grid_cells_.find(extended_index);\n          if (it == grid_cells_.end()) {\n            auto elevation_opt = calculateAverageElevationFromNeighbors(extended_index);\n\n            // Only create extended cell if we have valid neighbor data\n            if (elevation_opt.has_value()) {\n              grid_cells_[extended_index] = GridCell();\n              grid_cells_[extended_index].average_height = elevation_opt.value();\n              grid_cells_[extended_index].is_valid = true;\n\n              cells_added_this_radius++;\n              total_extensions_added++;\n            }\n\n            if (cells_added_this_radius > MAX_CELLS_PER_RADIUS) {\n              RCLCPP_WARN(\n                logger_, \"Per-radius extension limit reached (%zu cells), stopping radius %d\",\n                cells_added_this_radius, radius);\n              radius_limit_reached = true;\n            }\n          }\n        }\n      }\n    }\n\n    if (cells_added_this_radius > 0) {\n      elevation_cache_.clear();\n    }\n\n    if (cells_added_this_radius == 0) {\n      break;\n    }\n  }\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "calculateAverageElevationFromNeighbors",
+                        "functionCodeLine": "            auto elevation_opt = calculateAverageElevationFromNeighbors(extended_index);",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "96 | 拡張対象セルの近傍セルから平均標高を計算し、値が得られた場合のみ新規セルを作成することで、フィルタ結果（標高面）の信頼性を担保している。",
+                        "id": "32afedfdbdb5bd3fda0832df",
+                        "functionCodeContent": "std::optional<double> GridProcessor::calculateAverageElevationFromNeighbors(\n  const GridIndex & index) const\n{\n  std::vector<double> neighbor_elevations;\n\n  // Check 5x5 grid to find valid original cells\n  for (int dx = -2; dx <= 2; ++dx) {\n    for (int dy = -2; dy <= 2; ++dy) {\n      if (dx == 0 && dy == 0) continue;  // Skip center point\n\n      GridIndex neighbor_index;\n      neighbor_index.x = index.x + dx;\n      neighbor_index.y = index.y + dy;\n\n      auto neighbor_it = grid_cells_.find(neighbor_index);\n      if (neighbor_it != grid_cells_.end() && neighbor_it->second.is_valid) {\n        neighbor_elevations.push_back(neighbor_it->second.average_height);\n      }\n    }\n  }\n\n  // If we have neighbors, return simple average\n  if (!neighbor_elevations.empty()) {\n    double sum = 0.0;\n    for (double elevation : neighbor_elevations) {\n      sum += elevation;\n    }\n    return sum / neighbor_elevations.size();\n  }\n\n  // If no neighbors found, return std::nullopt to indicate no valid data\n  return std::nullopt;\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "GridProcessor::calculateAverageElevationFromNeighbors",
+                                "functionCodeLine": "std::optional<double> GridProcessor::calculateAverageElevationFromNeighbors(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                                "comment": "95 | 対象セルを中心とした 5×5 近傍セルを探索し、有効セルの標高を平均化してフィルタ後の標高を算出する主要ロジック。近傍に有効データが無い場合は nullopt を返して後段での判定材料とする。",
+                                "id": "4bd42f3d514f529c59518e2b"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "grid_cells_.find",
+                                "functionCodeLine": "      auto neighbor_it = grid_cells_.find(neighbor_index);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                                "comment": "62 | 格子インデックスをキーにセル情報を検索し、無効セルを除外して標高収集する判定処理の核となる。近傍セルの有効／無効を見極めることでフィルタ結果の信頼性を確保している。",
+                                "id": "ec2568723571d2d3174e5826"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "grid_cells_.find",
+                        "functionCodeLine": "          auto it = grid_cells_.find(extended_index);",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "85 | ハッシュマップから拡張対象セルの存在を検索し、既に生成済みであればスキップすることでセルの重複作成を防いでいる。",
+                        "id": "694dfcd10386afae90879c16"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "RCLCPP_WARN",
+                        "functionCodeLine": "        RCLCPP_WARN(logger_, \"Grid size limit reached (%zu cells), stopping extension at radius %d\",",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "80 | グリッド総数・拡張数・半径ごとの作成数が設定上限を超えた際に警告を出し、処理を打ち切る安全装置として機能している。",
+                        "id": "e911abf6a9653ecc16860cec"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "elevation_cache_.clear",
+                        "functionCodeLine": "      elevation_cache_.clear();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "78 | 半径ごとにキャッシュした近傍標高計算結果をリセットし、次の半径拡張時に最新情報で再計算できるようにしている。",
+                        "id": "188c85e919fea0d745b65586"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "finalizeGridMemory",
+                "functionCodeLine": "  finalizeGridMemory();",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                "comment": "70 | グリッドのメモリを圧縮／固定し、以降の参照を高速化する後処理。直接の標高フィルタではないが、計算済みフィルタ結果を効率的に保持する最終段階。",
+                "id": "4548e9440284ca94cb6fab03",
+                "functionCodeContent": "void GridProcessor::finalizeGridMemory()\n{\n  for (auto & [index, cell] : grid_cells_) {\n    if (cell.is_valid && cell.points.capacity() > 0) {\n      cell.points.shrink_to_fit();\n    }\n  }\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "cell.points.shrink_to_fit",
+                        "functionCodeLine": "      cell.points.shrink_to_fit();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "35 | 各セルの PointCloud コンテナに対して余分に確保されたメモリを解放し、実データサイズに合わせて容量を縮小する。フィルタ処理後のグリッドをメモリ効率良く保持するための後処理として機能する。",
+                        "id": "9cc8d58c165d34868f0df386"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cell.points.capacity",
+                        "functionCodeLine": "    if (cell.is_valid && cell.points.capacity() > 0) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "30 | 現在の PointCloud が予約しているバッファ容量を取得し、0 より大きい場合のみ shrink_to_fit を適用することで無駄な処理を避ける判定ロジック。",
+                        "id": "8da41fd5942bc82f571ab020"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cell.is_valid",
+                        "functionCodeLine": "    if (cell.is_valid && cell.points.capacity() > 0) {",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+                        "comment": "28 | セルが有効（フィルタ結果として使用される）かを示すフラグ。無効セルはメモリ解放の対象外とし、処理コストを削減する。",
+                        "id": "0a52f41715fb0d18b9c9ed10"
+                    },
+                    "children": []
+                }
+            ]
+        }
+    ],
+    "purpose": "autowareのcompare_map_segmentationのLaneletElevationFilterComponentのfilterの仕組みを知りたい",
+    "rootPath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_compare_map_segmentation/src/lanelet_elevation_filter/grid_processor.cpp",
+    "rootFunctionName": "void GridProcessor::processLanelets("
+}
