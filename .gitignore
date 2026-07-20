@@ -1,1 +1,4 @@
 .DS_Store
+
+# clangdインデックス失敗のため、外す
+autoware_ground_segmentation_cuda
