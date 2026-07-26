@@ -1,0 +1,1468 @@
+{
+    "content": {
+        "functionName": "void OccupancyGridMapFixedBlindSpot::updateWithPointCloud(",
+        "functionCodeLine": "void OccupancyGridMapFixedBlindSpot::updateWithPointCloud(",
+        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed.cpp",
+        "functionCodeContent": "void OccupancyGridMapFixedBlindSpot::updateWithPointCloud(\n  const CudaPointCloud2 & raw_pointcloud, const CudaPointCloud2 & obstacle_pointcloud,\n  const Pose & robot_pose, const Pose & scan_origin)\n{\n  const size_t angle_bin_size =\n    ((max_angle_ - min_angle_) * angle_increment_inv_) + size_t(1 /*margin*/);\n\n  // Transform Matrix from base_link to map frame\n  mat_map_ = utils::getTransformMatrix(robot_pose);\n\n  const auto scan2map_pose = utils::getInversePose(scan_origin);  // scan -> map transform pose\n\n  // Transform Matrix from map frame to scan frame\n  mat_scan_ = utils::getTransformMatrix(scan2map_pose);\n\n  const auto map_res = this->getResolution();\n  const auto num_cells_x = this->getSizeInCellsX();\n  const auto num_cells_y = this->getSizeInCellsY();\n  const std::size_t range_bin_size =\n    static_cast<std::size_t>(std::sqrt(2) * std::max(num_cells_x, num_cells_y) / 2.0) + 1;\n\n  cudaMemsetAsync(\n    raw_points_tensor_.get(), 0xFF, 2 * angle_bin_size * range_bin_size * sizeof(std::int64_t),\n    stream_);\n  cudaMemsetAsync(\n    obstacle_points_tensor_.get(), 0xFF, 2 * angle_bin_size * range_bin_size * sizeof(std::int64_t),\n    stream_);\n  cudaMemsetAsync(\n    device_costmap_.get(), cost_value::NO_INFORMATION,\n    num_cells_x * num_cells_y * sizeof(std::uint8_t), stream_);\n\n  Eigen::Matrix3f rotation_map = mat_map_.block<3, 3>(0, 0);\n  Eigen::Vector3f translation_map = mat_map_.block<3, 1>(0, 3);\n\n  Eigen::Matrix3f rotation_scan = mat_scan_.block<3, 3>(0, 0);\n  Eigen::Vector3f translation_scan = mat_scan_.block<3, 1>(0, 3);\n\n  cudaMemcpyAsync(\n    device_rotation_map_.get(), &rotation_map, sizeof(Eigen::Matrix3f), cudaMemcpyHostToDevice,\n    stream_);\n  cudaMemcpyAsync(\n    device_translation_map_.get(), &translation_map, sizeof(Eigen::Vector3f),\n    cudaMemcpyHostToDevice, stream_);\n  cudaMemcpyAsync(\n    device_rotation_scan_.get(), &rotation_scan, sizeof(Eigen::Matrix3f), cudaMemcpyHostToDevice,\n    stream_);\n  cudaMemcpyAsync(\n    device_translation_scan_.get(), &translation_scan, sizeof(Eigen::Vector3f),\n    cudaMemcpyHostToDevice, stream_);\n\n  const std::size_t num_raw_points = raw_pointcloud.width * raw_pointcloud.height;\n  float range_resolution_inv = 1.0 / map_res;\n\n  map_fixed::prepareTensorLaunch(\n    reinterpret_cast<const float *>(raw_pointcloud.data.get()), num_raw_points,\n    raw_pointcloud.point_step / sizeof(float), angle_bin_size, range_bin_size, min_height_,\n    max_height_, min_angle_, angle_increment_inv_, range_resolution_inv, device_rotation_map_.get(),\n    device_translation_map_.get(), device_rotation_scan_.get(), device_translation_scan_.get(),\n    raw_points_tensor_.get(), stream_);\n\n  const std::size_t num_obstacle_points = obstacle_pointcloud.width * obstacle_pointcloud.height;\n\n  map_fixed::prepareTensorLaunch(\n    reinterpret_cast<const float *>(obstacle_pointcloud.data.get()), num_obstacle_points,\n    obstacle_pointcloud.point_step / sizeof(float), angle_bin_size, range_bin_size, min_height_,\n    max_height_, min_angle_, angle_increment_inv_, range_resolution_inv, device_rotation_map_.get(),\n    device_translation_map_.get(), device_rotation_scan_.get(), device_translation_scan_.get(),\n    obstacle_points_tensor_.get(), stream_);\n\n  map_fixed::fillEmptySpaceLaunch(\n    raw_points_tensor_.get(), angle_bin_size, range_bin_size, range_resolution_inv,\n    scan_origin.position.x, scan_origin.position.y, origin_x_, origin_y_, num_cells_x, num_cells_y,\n    cost_value::FREE_SPACE, device_costmap_.get(), stream_);\n\n  map_fixed::fillUnknownSpaceLaunch(\n    raw_points_tensor_.get(), obstacle_points_tensor_.get(), distance_margin_, angle_bin_size,\n    range_bin_size, range_resolution_inv, scan_origin.position.x, scan_origin.position.y, origin_x_,\n    origin_y_, num_cells_x, num_cells_y, cost_value::FREE_SPACE, cost_value::NO_INFORMATION,\n    device_costmap_.get(), stream_);\n\n  map_fixed::fillObstaclesLaunch(\n    obstacle_points_tensor_.get(), distance_margin_, angle_bin_size, range_bin_size,\n    range_resolution_inv, origin_x_, origin_y_, num_cells_x, num_cells_y,\n    cost_value::LETHAL_OBSTACLE, device_costmap_.get(), stream_);\n}",
+        "id": "1db305b7e1fb1b2310fd3525"
+    },
+    "children": [
+        {
+            "content": {
+                "functionName": "map_fixed::prepareTensorLaunch",
+                "functionCodeLine": "  map_fixed::prepareTensorLaunch(",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/costmap_2d/occupancy_grid_map_fixed_kernel.hpp",
+                "comment": "99 | 入力点群を角度×距離の2次元テンソル表現へ変換するGPUカーネルの起動部。高さ制限、角度ビン、距離分解能、map/scan間の座標変換を使って各点をビニングし、後段の自由空間・未知空間・障害物判定の基礎データを作る。この関数は生点群と障害物点群の両方に対して使われるため、updateWithPointCloudの中核処理である。",
+                "id": "70a0987ad5774f0f8f67de8d",
+                "functionCodeContent": "void prepareTensorLaunch(\n  const float * input_pointcloud, const std::size_t num_points, const std::size_t points_step,\n  const std::size_t angle_bins, const std::size_t range_bins, const float min_height,\n  const float max_height, const float min_angle, const float angle_increment_inv,\n  const float range_resolution_inv, const Eigen::Matrix3f * rotation_map,\n  const Eigen::Vector3f * translation_map, const Eigen::Matrix3f * rotation_scan,\n  const Eigen::Vector3f * translation_scan, std::uint64_t * points_tensor, cudaStream_t stream)\n{\n  const int threadsPerBlock = 256;\n  const int blocksPerGrid = (num_points + threadsPerBlock - 1) / threadsPerBlock;\n\n  prepareTensorKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(\n    input_pointcloud, num_points, points_step, angle_bins, range_bins, min_height, max_height,\n    min_angle, angle_increment_inv, range_resolution_inv, rotation_map, translation_map,\n    rotation_scan, translation_scan, points_tensor);\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "prepareTensorKernel",
+                        "functionCodeLine": "  prepareTensorKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "99 | 点群をテンソル形式へ変換するGPUカーネル本体をCUDAストリーム付きで起動している行。この関数の中心処理であり、occupancy_grid_map_fixed の updateWithPointCloud における前処理として、点群のビン化や座標変換をGPUへ委譲する仕組みそのものを表している。",
+                        "id": "8765661e07bf36cfdfa8be76",
+                        "functionCodeContent": "__global__ void prepareTensorKernel(\n  const float * __restrict__ input_pointcloud, const std::size_t num_points,\n  const std::size_t points_step, const std::size_t angle_bins, const std::size_t range_bins,\n  const float min_height, const float max_height, const float min_angle,\n  const float angle_increment_inv, const float range_resolution_inv,\n  const Eigen::Matrix3f * __restrict__ rotation_map,\n  const Eigen::Vector3f * __restrict__ translation_map,\n  const Eigen::Matrix3f * __restrict__ rotation_scan,\n  const Eigen::Vector3f * __restrict__ translation_scan, std::uint64_t * __restrict__ points_tensor)\n{\n  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n  if (idx >= num_points) {\n    return;\n  }\n\n  Eigen::Map<const Eigen::Vector3f> point(input_pointcloud + idx * points_step);\n\n  if (\n    point.z() > max_height || point.z() < min_height || !isfinite(point.x()) ||\n    !isfinite(point.y()) || !isfinite(point.z())) {\n    return;\n  }\n\n  Eigen::Vector3f map_point = (*rotation_map) * point + (*translation_map);\n  Eigen::Vector3f scan_point = (*rotation_scan) * map_point + (*translation_scan);\n\n  float angle = atan2(scan_point.y(), scan_point.x());\n  int angle_bin_index = static_cast<int>((angle - min_angle) * angle_increment_inv);\n  float range = sqrt(scan_point.y() * scan_point.y() + scan_point.x() * scan_point.x());\n  int range_bin_index = static_cast<int>(range * range_resolution_inv);\n\n  if (\n    angle_bin_index < 0 || angle_bin_index >= angle_bins || range_bin_index < 0 ||\n    range_bin_index >= range_bins) {\n    return;\n  }\n\n  std::uint64_t range_int = static_cast<std::int64_t>(range / RANGE_DISCRETIZATION_RESOLUTION);\n  std::uint32_t world_x_int = __float_as_uint(map_point.x());\n  std::uint32_t world_y_int = __float_as_uint(map_point.y());\n\n  // Can not use std::uint64_t for cuda reasons...\n  static_assert(\n    sizeof(std::uint64_t) == sizeof(unsigned long long int),\n    \"unsigned long long int is not 8 bytes\");\n  unsigned long long int range_and_x_int = (range_int << 32) | world_x_int;\n  unsigned long long int range_and_y_int = (range_int << 32) | world_y_int;\n\n  std::uint64_t * element_address =\n    points_tensor + 2 * (angle_bin_index * range_bins + range_bin_index);\n\n  atomicMin(reinterpret_cast<unsigned long long int *>(element_address), range_and_x_int);\n  atomicMin(reinterpret_cast<unsigned long long int *>(element_address + 1), range_and_y_int);\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "Eigen::Map<const Eigen::Vector3f>",
+                                "functionCodeLine": "  Eigen::Map<const Eigen::Vector3f> point(input_pointcloud + idx * points_step);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "92 | 入力点群バッファ上の対象要素をコピーせずに3次元ベクトルとして参照する。各スレッドが担当する点を取り出す入口であり、この後の高さ判定や座標変換の元データになる。",
+                                "id": "5b5165d45b2f7a8f58362bfd"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "isfinite",
+                                "functionCodeLine": "    point.z() > max_height || point.z() < min_height || !isfinite(point.x()) ||",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "88 | 点の高さが許容範囲内か、x/y/z が有限値かを確認して不正な点を早期に除外する。occupancy_grid_map_fixed の更新前段で、ノイズや異常値をテンソル化対象から外すための重要なフィルタ処理。",
+                                "id": "81e1b3d0a34d83c316f809d3"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "Eigen::Vector3f",
+                                "functionCodeLine": "  Eigen::Vector3f map_point = (*rotation_map) * point + (*translation_map);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "90 | 点をまず地図座標系へ、続けて scan 基準座標系へ変換する処理の中心。updateWithPointCloud の仕組みとしては、占有判定に使う角度・距離ビンを求める前に、基準座標系を揃える役割を持つ。",
+                                "id": "b4a170899a340ab9ff4b14fc"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "atan2",
+                                "functionCodeLine": "  float angle = atan2(scan_point.y(), scan_point.x());",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "94 | scan 座標系へ変換した点から方位角を計算し、続く angle_bin_index と range_bin_index の算出につなげる。点群を極座標系のビンへ落とし込むことで、occupancy grid 更新用の前処理テンソルを構築している。",
+                                "id": "bc99bf091d69ffaa1ad1cd75"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "atomicMin",
+                                "functionCodeLine": "  atomicMin(reinterpret_cast<unsigned long long int *>(element_address), range_and_x_int);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "98 | 同じ角度・距離ビンに複数スレッドが同時に書き込んでも壊れないよう、各ビンについて最小距離の点情報を競合安全に反映する。結果として各ビンに『より手前の障害物点』が残り、updateWithPointCloud に必要な障害物表現の基礎データになる。",
+                                "id": "987005683911255399398d74"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "blocksPerGrid",
+                        "functionCodeLine": "  const int blocksPerGrid = (num_points + threadsPerBlock - 1) / threadsPerBlock;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "92 | 入力点群数 num_points に応じて、必要なCUDAブロック数を切り上げ計算している。全点をGPUスレッドで処理できるように起動規模を決めるため、GPU並列処理の構成を理解するうえで重要な行。",
+                        "id": "8ff7021ab7298b124d04fec3"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "threadsPerBlock",
+                        "functionCodeLine": "  const int threadsPerBlock = 256;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "88 | CUDAカーネル起動時の1ブロックあたりスレッド数を 256 に固定している。prepareTensorLaunch がどの粒度でGPU並列化するかを決める基本設定であり、後続の blocksPerGrid 計算と組み合わせて起動構成を作る。",
+                        "id": "4588f241e8310781251efd8b"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cudaStream_t",
+                        "functionCodeLine": "  const Eigen::Vector3f * translation_scan, std::uint64_t * points_tensor, cudaStream_t stream)",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "85 | CUDAストリームを引数で受け取り、非同期実行可能な形でカーネル起動に利用している。この関数が結果待ちや同期を行わず、起動だけを担当する設計であることを読み取るうえで関連が高い。",
+                        "id": "03da794eb56565218cb69505"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "prepareTensorLaunch",
+                        "functionCodeLine": "void prepareTensorLaunch(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "90 | テンソル生成用GPU処理の起動ラッパー関数そのもの。点群、角度・距離ビン条件、高さ条件、map/scan座標変換、出力テンソル、CUDAストリームを受け取り、カーネル起動だけを行う役割を持つため、updateWithPointCloud の仕組みを追う入口として有用。",
+                        "id": "8533a0d6e430eac00546cd0c"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "map_fixed::fillEmptySpaceLaunch",
+                "functionCodeLine": "  map_fixed::fillEmptySpaceLaunch(",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                "comment": "96 | 生点群テンソルをもとに、センサ原点から観測点までの可視領域を自由空間としてコストマップへ反映するGPUカーネルの起動部。occupancy_grid_map_fixedがどのように空きセルを塗るかを理解するうえで重要な処理。",
+                "id": "2a23e7edf1fafd598ca1ec18",
+                "functionCodeContent": "void fillEmptySpaceLaunch(\n  const std::uint64_t * points_tensor, const std::size_t angle_bins, const std::size_t range_bins,\n  const float map_resolution_inv, const float scan_origin_x, const float scan_origin_y,\n  const float map_origin_x, const float map_origin_y, const int num_cells_x, const int num_cells_y,\n  std::uint8_t empty_value, std::uint8_t * costmap_tensor, cudaStream_t stream)\n{\n  const int threadsPerBlock = 256;\n  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;\n\n  fillEmptySpaceKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(\n    points_tensor, angle_bins, range_bins, map_resolution_inv, scan_origin_x, scan_origin_y,\n    map_origin_x, map_origin_y, num_cells_x, num_cells_y, empty_value, costmap_tensor);\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "fillEmptySpaceLaunch",
+                        "functionCodeLine": "void fillEmptySpaceLaunch(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "97 | 空き領域埋め処理のCUDA起動ラッパー関数そのもの。点群テンソル、ビン数、地図解像度、原点、出力先コストマップ、CUDAストリームを受け取り、実処理を行うカーネル起動だけを担当する。",
+                        "id": "cd1370c327e7cba9c8edf152"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "threadsPerBlock",
+                        "functionCodeLine": "  const int threadsPerBlock = 256;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "90 | CUDAカーネル起動時の1ブロックあたりスレッド数を固定値256で設定している。並列実行粒度を決める基本設定であり、後続のブロック数計算とカーネル起動構成の前提になる。",
+                        "id": "5e678b91ae556235d0c509ce"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "blocksPerGrid",
+                        "functionCodeLine": "  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "95 | angle_bins と range_bins の積で表される全処理要素数を、threadsPerBlock で割って切り上げることで必要なブロック数を計算している。全ビンを漏れなく処理するための起動構成を決める行。",
+                        "id": "3bb0d0cfb0aa2ef4dfeca0f3"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "fillEmptySpaceKernel",
+                        "functionCodeLine": "  fillEmptySpaceKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "99 | 実際の空き領域更新を行うCUDAカーネルを起動している。起動設定として blocksPerGrid、threadsPerBlock、共有メモリサイズ0、指定ストリーム stream を用い、入力点群・ビン情報・地図情報・書き込み値・出力バッファをまとめて渡している。",
+                        "id": "efbcf6896567e9b634eb413f",
+                        "functionCodeContent": "__global__ void fillEmptySpaceKernel(\n  const std::uint64_t * __restrict__ points_tensor, const std::size_t angle_bins,\n  const std::size_t range_bins, const float map_resolution_inv, const float scan_origin_x,\n  const float scan_origin_y, const float map_origin_x, const float map_origin_y,\n  const int num_cells_x, const int num_cells_y, std::uint8_t empty_value,\n  std::uint8_t * __restrict__ costmap_tensor)\n{\n  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n  if (idx >= angle_bins * range_bins) return;\n\n  int angle_bin_index = idx / range_bins;\n  int range_bin_index = idx % range_bins;\n\n  std::uint64_t range_and_x =\n    points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 0];\n  std::uint32_t range_int = range_and_x >> 32;\n\n  if (range_int == 0xFFFFFFFF) {\n    return;\n  }\n\n  std::uint64_t range_and_y =\n    points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 1];\n  float world_x = __uint_as_float(range_and_x & 0xFFFFFFFF);\n  float world_y = __uint_as_float(range_and_y & 0xFFFFFFFF);\n\n  if (world_x < map_origin_x || world_y < map_origin_y) {\n    return;\n  }\n\n  autoware::occupancy_grid_map::utils::raytrace(\n    scan_origin_x, scan_origin_y, world_x, world_y, map_origin_x, map_origin_y, map_resolution_inv,\n    num_cells_x, num_cells_y, empty_value, costmap_tensor);\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "autoware::occupancy_grid_map::utils::raytrace",
+                                "functionCodeLine": "  autoware::occupancy_grid_map::utils::raytrace(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                "comment": "99 | センサ原点から観測点までの経路上のセルをたどり、空き領域値でcostmap_tensorに書き込む中核処理。updateWithPointCloudにおける『点までの可視線上をfreeにする』仕組みそのものに対応しており、このカーネルの最終目的を担っている。",
+                                "id": "9a9c2873661e3205d0a7ac62",
+                                "functionCodeContent": "inline void __device__ raytrace(\n  const float source_x, const float source_y, const float target_x, const float target_y,\n  const float origin_x, float origin_y, const float resolution_inv, const int size_x,\n  const int size_y, const std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int x0{};\n  unsigned int y0{};\n  const float ox{source_x};\n  const float oy{source_y};\n\n  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  // we can pre-compute the endpoints of the map outside of the inner loop... we'll need these later\n  const float resolution = 1.0 / resolution_inv;\n  const float map_end_x = origin_x + size_x * resolution;\n  const float map_end_y = origin_y + size_y * resolution;\n\n  float wx = target_x;\n  float wy = target_y;\n\n  // now we also need to make sure that the endpoint we're ray-tracing\n  // to isn't off the costmap and scale if necessary\n  const float a = wx - ox;\n  const float b = wy - oy;\n\n  // the minimum value to raytrace from is the origin\n  if (wx < origin_x) {\n    const float t = (origin_x - ox) / a;\n    wx = origin_x;\n    wy = oy + b * t;\n  }\n  if (wy < origin_y) {\n    const float t = (origin_y - oy) / b;\n    wx = ox + a * t;\n    wy = origin_y;\n  }\n\n  // the maximum value to raytrace to is the end of the map\n  if (wx > map_end_x) {\n    const float t = (map_end_x - ox) / a;\n    wx = map_end_x - .001;\n    wy = oy + b * t;\n  }\n  if (wy > map_end_y) {\n    const float t = (map_end_y - oy) / b;\n    wx = ox + a * t;\n    wy = map_end_y - .001;\n  }\n\n  // now that the vector is scaled correctly... we'll get the map coordinates of its endpoint\n  unsigned int x1{};\n  unsigned int y1{};\n\n  // check for legality just in case\n  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold\n  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);\n}"
+                            },
+                            "children": [
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "96 | レイの始点となるワールド座標(source_x, source_y)をグリッドマップ上のセル座標(x0, y0)へ変換し、マップ内に収まるかを確認する。始点がマップ外なら以降の更新は行えないため即座にreturnする前提条件チェックになっている。",
+                                        "id": "80d1e2a58dd66bee91ec08e6",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "100 | ワールド座標系の点を occupancy grid のマップ添字へ変換する関数本体。updateWithPointCloud のような点群反映処理では、各点をどのセルへ投影するかを決める基礎処理であり、仕組みを理解する上で最重要の関数。",
+                                                "id": "5efa57b42fb6d68763b181df"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | ワールド座標を原点基準の相対距離へ直し、解像度の逆数を掛けた結果を切り捨ててグリッドの x 添字へ変換している。連続値の座標を離散的な occupancy grid セル番号へ落とし込む中核処理。",
+                                                "id": "7e8cdcb71fe8f649aac5fadb"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | y 方向についても同様に、ワールド座標からグリッドの y 添字へ変換している。x と合わせて、点群中の各点がマップ上のどのセルに対応するかを決定する。",
+                                                "id": "7a4bec67b9cec6d8138947b1"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "    return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "88 | ワールド座標がマップ原点より小さい場合に即座に変換失敗を返す。updateWithPointCloud 側では、このような失敗判定によってマップ外の点を更新対象から除外する仕組みにつながる。",
+                                                "id": "3d0001473c93fd8e0aeadb31"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return true",
+                                                "functionCodeLine": "    return true;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "91 | 変換後のマップ添字 mx, my が size_x, size_y の範囲内に収まっている場合に成功を返す。つまり、その点が occupancy grid 内の有効セルとして updateWithPointCloud に利用可能であることを示す。",
+                                                "id": "4e877d55309644ade7d32f6e"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "92 | マップ境界に合わせて補正した終点(wx, wy)を最終的なセル座標(x1, y1)へ変換する。境界補正後でも不正な座標なら処理を打ち切るため、実際にレイを引く直前の合法性確認を担っている。",
+                                        "id": "61a7ec8ff546191796f7d8cc",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | ワールド座標系の点 (wx, wy) を occupancy grid のセルインデックス (mx, my) に変換する関数。updateWithPointCloud のような点群反映処理では、各点を地図セルへ割り当てる前段として必須の座標変換であり、この関数が成功した点だけが地図更新対象になると考えられる。",
+                                                "id": "3cb58260cad0e3b714f92f74"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | ワールドX座標から原点オフセットを引き、解像度の逆数を掛けてセル単位へ変換し、小数点以下を切り下げてマップXインデックスを求めている。occupancy grid では連続座標を離散セルへ落とし込む中核処理。",
+                                                "id": "b34eb96f65072be75ed39056"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | ワールドY座標をマップYインデックスへ変換する処理。X方向と同様に、地図原点基準へ平行移動してから解像度単位で離散化しており、点群の各点を occupancy grid の行方向セルへ対応付ける。",
+                                                "id": "06c90f8366f350340b5545b4"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "    return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "92 | 入力座標が origin_x / origin_y より小さい場合、あるいは変換後インデックスが size_x / size_y の範囲外の場合に変換失敗として false を返す。updateWithPointCloud の観点では、地図外の点を更新対象から除外するためのガード処理に相当する。",
+                                                "id": "6e3ca060e380e893684a1c39"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return true",
+                                                "functionCodeLine": "    return true;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "94 | 変換後の mx, my が地図サイズ内に収まっている場合に true を返す。つまり、その点は occupancy_grid_map_fixed 上の有効セルに対応付け可能であり、以降の占有更新処理へ進めることを示す。",
+                                                "id": "c709d1a409e9e123c750c992"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytraceLine",
+                                        "functionCodeLine": "  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "99 | 始点セルから終点セルまで直線状に走査し、通過するセルへcostを書き込む本体処理。updateWithPointCloudの仕組みとしては、点群の各点に対してこのレイ描画を行うことで、空間のfree/occupied更新に必要なセル列を反映する中核関数である。",
+                                        "id": "88db1fdea0a64efa514f588f",
+                                        "functionCodeContent": "inline __device__ void raytraceLine(\n  unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1, unsigned int max_length,\n  unsigned int min_length, unsigned int size_x, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  int dx_full = x1 - x0;\n  int dy_full = y1 - y0;\n\n  // we need to chose how much to scale our dominant dimension,\n  // based on the maximum length of the line\n  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);\n  if (dist < min_length) {\n    return;\n  }\n\n  unsigned int min_x0, min_y0;\n  if (dist > 0.0) {\n    // Adjust starting point and offset to start from min_length distance\n    min_x0 = (unsigned int)(x0 + dx_full / dist * min_length);\n    min_y0 = (unsigned int)(y0 + dy_full / dist * min_length);\n  } else {\n    // dist can be 0 if [x0, y0]==[x1, y1].\n    // In this case only this cell should be processed.\n    min_x0 = x0;\n    min_y0 = y0;\n  }\n  unsigned int offset = min_y0 * size_x + min_x0;\n\n  int dx = x1 - min_x0;\n  int dy = y1 - min_y0;\n\n  unsigned int abs_dx = abs(dx);\n  unsigned int abs_dy = abs(dy);\n\n  int offset_dx = dx > 0 ? 1 : -1;            // sign(dx);\n  int offset_dy = dy > 0 ? size_x : -size_x;  // sign(dy) * size_x;\n\n  constexpr float epsilon = 1e-6;\n  float scale =\n    (dist < epsilon)\n      ? 1.0f\n      : ((max_length / dist) < 1.0f ? (max_length / dist) : 1.0f);\n  // if x is dominant\n  if (abs_dx >= abs_dy) {\n    int error_y = abs_dx / 2;\n\n    bresenham2D(\n      abs_dx, abs_dy, error_y, offset_dx, offset_dy, offset, (unsigned int)(scale * abs_dx), cost,\n      costmap_tensor);\n    return;\n  }\n\n  // otherwise y is dominant\n  int error_x = abs_dy / 2;\n\n  bresenham2D(\n    abs_dy, abs_dx, error_x, offset_dy, offset_dx, offset, (unsigned int)(scale * abs_dy), cost,\n    costmap_tensor);\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "bresenham2D",
+                                                "functionCodeLine": "    bresenham2D(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | raytraceLineの最終的な本体処理であり、Bresenham法を使ってコストマップ上のセルを直線状に走査・更新する。updateWithPointCloudにおけるレイの描画そのものを担う中核処理で、この関数の仕組みを理解する上で最も重要な呼び出し先。",
+                                                "id": "eb3d80c662f2b2de0eb2df02",
+                                                "functionCodeContent": "inline __device__ void bresenham2D(\n  unsigned int abs_da, unsigned int abs_db, int error_b, int offset_a, int offset_b,\n  unsigned int offset, unsigned int max_length, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int end = (max_length < abs_da) ? max_length : abs_da;\n  for (unsigned int i = 0; i < end; ++i) {\n    costmap_tensor[offset] = cost;\n    offset += offset_a;\n    error_b += abs_db;\n    if ((unsigned int)error_b >= abs_da) {\n      offset += offset_b;\n      error_b -= abs_da;\n    }\n  }\n  costmap_tensor[offset] = cost;\n}"
+                                            },
+                                            "children": [
+                                                {
+                                                    "content": {
+                                                        "functionName": "bresenham2D",
+                                                        "functionCodeLine": "inline __device__ void bresenham2D(",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "100 | 2次元グリッド上でブレゼンハム法により線分を描画する関数本体であり、pointcloudから占有グリッドへレイ状にセルを書き込む仕組みの中核にあたる。更新対象セルを主軸・副軸の増分と誤差項で順次たどり、各セルへ同じコスト値を書き込む。",
+                                                        "id": "f3137f3ca32789aff3fe7f65"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "    costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "97 | 現在注目しているコストマップセルへ値を書き込む処理。occupancy_grid_map_fixed の updateWithPointCloud における『点群に基づいてグリッドセルを更新する』実際の反映箇所そのもので、レイ上の各セルに占有・自由空間などのコストを設定する役割を持つ。",
+                                                        "id": "12c2ec16f6876cbb624496e8"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "offset += offset_a",
+                                                        "functionCodeLine": "    offset += offset_a;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "92 | 主軸方向へ1セル進む処理。線分描画の基本進行方向を表しており、レイキャスト時にグリッド上を1ステップずつ前進して次の更新対象セルへ移動する。",
+                                                        "id": "d1c6a8d18c1e32c05b2799a3"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "if ((unsigned int)error_b >= abs_da)",
+                                                        "functionCodeLine": "    if ((unsigned int)error_b >= abs_da) {",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "95 | 誤差項に基づいて副軸方向にも進むべきかを判定する条件分岐。ブレゼンハム法の要点であり、斜めの線を離散グリッド上でなるべく直線に近く表現するために、副軸方向への補正タイミングを決めている。",
+                                                        "id": "d840e1baa6135adbd7bd24af"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "  costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "90 | ループ終了後に終点セルへ最終的なコスト値を書き込む処理。途中の反復だけでは終点が未描画になる可能性があるため、最後のセルも確実に更新して線分を閉じている。",
+                                                        "id": "094083a77399bfa7a837494b"
+                                                    },
+                                                    "children": []
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "sqrt",
+                                                "functionCodeLine": "  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "92 | 始点と終点の差分から線分長distを計算している。この距離は最小長判定、開始地点の補正、さらに最大長に応じた描画スケール計算にも使われており、raytraceLine全体の制御条件の基準になっている。",
+                                                "id": "201074a6efb8d6fc903fd372"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return",
+                                                "functionCodeLine": "    return;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "84 | distがmin_length未満のときに早期終了する制御であり、短すぎるレイを描画対象から除外する。occupancy_grid_map_fixedのupdateWithPointCloudで不要な近距離更新を避けるための重要なガード条件になっている。",
+                                                "id": "03945e2b721657447396952c"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "abs",
+                                                "functionCodeLine": "  unsigned int abs_dx = abs(dx);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "88 | 残りのx方向・y方向の差分の絶対値を求め、どちらの軸が優勢かを判定するために使う。これによりBresenham法へ渡す主軸・従軸の選択が決まり、どの方向に効率よく線を引くかが決定される。",
+                                                "id": "3c68f3fc029018e3465da757"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "scale",
+                                                "functionCodeLine": "  float scale =",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "94 | max_lengthと実際の距離distから、どこまで線を描画するかの比率を決める。遠すぎるレイを全長ではなく制限長までに切り詰めてBresenham法へ渡すため、updateWithPointCloudにおけるレイ長制御の要となる。",
+                                                "id": "512b91cee7df57fedf97776b"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "cell_raytrace_range",
+                                        "functionCodeLine": "  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "84 | レイの最大長を非常に大きい値に設定し、実質的に距離制限なしでraytraceLineを動かすための定数。ここではレイ長で打ち切るのではなく、境界補正済みの終点までしっかりセル更新させる意図がある。",
+                                        "id": "cb27f05c37ccc3fd01d7f5b7"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytrace",
+                                        "functionCodeLine": "inline void __device__ raytrace(",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "94 | 始点・終点のワールド座標を受け取り、始点変換、終点の境界クリップ、終点変換、そしてraytraceLine呼び出しまでをまとめて行うGPUデバイス関数。occupancy_grid_map_fixedのupdateWithPointCloudでは、点群1点ごとのレイ更新単位として機能する重要な処理のまとまりである。",
+                                        "id": "cf256f09fcb97dccfec10e60"
+                                    },
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "content": {
+                                "functionName": "points_tensor",
+                                "functionCodeLine": "    points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 0];",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "91 | 角度ビン・距離ビンごとに格納されたエンコード済み点群データへアクセスする部分。updateWithPointCloudの前段で極座標ビン化された点を1スレッド1ビン単位で処理する構造がここに表れている。",
+                                "id": "3efbf2efbd6c1a39ed74e5bd"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "__uint_as_float",
+                                "functionCodeLine": "  float world_x = __uint_as_float(range_and_x & 0xFFFFFFFF);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "88 | エンコード済みの32bit値をfloatへ復元し、観測点のワールド座標を取り出すために使われている。raytraceに渡す終点座標を復元する重要な役割を持つ。",
+                                "id": "8e276e2fad4d6550fb9c4bcc"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "if (range_int == 0xFFFFFFFF)",
+                                "functionCodeLine": "  if (range_int == 0xFFFFFFFF) {",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "86 | 対象ビンに有効な観測点がないことを示す番兵値を判定し、その場合は空き領域更新を行わず早期終了する。無効ビンを除外して不要なraytraceを防ぐガード処理。",
+                                "id": "1d67a1b732e6f0868769993f"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "if (world_x < map_origin_x || world_y < map_origin_y)",
+                                "functionCodeLine": "  if (world_x < map_origin_x || world_y < map_origin_y) {",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "80 | 復元した観測点がマップ原点より外側にある場合に処理を打ち切る境界チェック。マップ外へのraytraceを避け、updateWithPointCloudでの安全なcostmap更新を支える前処理になっている。",
+                                "id": "6e63a36a82f8c060cd169b00"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "costmap_tensor",
+                        "functionCodeLine": "    map_origin_x, map_origin_y, num_cells_x, num_cells_y, empty_value, costmap_tensor);",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "88 | カーネル呼び出しの引数末尾で、空き領域として書き込む値 empty_value と、結果の書き込み先である costmap_tensor を渡している。updateWithPointCloud の中で occupancy_grid_map_fixed を更新する実データ出力先に相当する重要な引数。",
+                        "id": "7d71e73ae2be2ae849ffbd1a"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "map_fixed::fillUnknownSpaceLaunch",
+                "functionCodeLine": "  map_fixed::fillUnknownSpaceLaunch(",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                "comment": "98 | 生点群テンソルと障害物点群テンソルの差異、およびdistance_marginを用いて、自由空間の奥側や遮蔽された領域を未知空間として反映するGPUカーネルの起動部。BlindSpot付きfixed方式で『見えていない領域をどう扱うか』の要となる。",
+                "id": "90c12f8be3f4bb43fcfd7013",
+                "functionCodeContent": "void fillUnknownSpaceLaunch(\n  const std::uint64_t * raw_points_tensor, const std::uint64_t * obstacle_points_tensor,\n  const float distance_margin, const std::size_t angle_bins, const std::size_t range_bins,\n  const float map_resolution_inv, const float scan_origin_x, const float scan_origin_y,\n  const float map_origin_x, const float map_origin_y, const int num_cells_x, const int num_cells_y,\n  std::uint8_t free_space_value, std::uint8_t no_information_value, std::uint8_t * costmap_tensor,\n  cudaStream_t stream)\n{\n  const int threadsPerBlock = 256;\n  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;\n\n  fillUnknownSpaceKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(\n    raw_points_tensor, obstacle_points_tensor, distance_margin, angle_bins, range_bins,\n    map_resolution_inv, scan_origin_x, scan_origin_y, map_origin_x, map_origin_y, num_cells_x,\n    num_cells_y, free_space_value, no_information_value, costmap_tensor);\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "fillUnknownSpaceKernel",
+                        "functionCodeLine": "  fillUnknownSpaceKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "99 | 未知空間補完の実処理を担う CUDA カーネルを起動している行で、この関数の中心。occupancy_grid_map_fixed の updateWithPointCloud における未知空間の埋め方の仕組みを知るうえで、実際のアルゴリズム本体はこのカーネル側に委譲されていることが分かる。",
+                        "id": "8a4adde03d6354e33461b904",
+                        "functionCodeContent": "__global__ void fillUnknownSpaceKernel(\n  const std::uint64_t * __restrict__ raw_points_tensor,\n  const std::uint64_t * __restrict__ obstacle_points_tensor, const float distance_margin,\n  const std::size_t angle_bins, const std::size_t range_bins, const float map_resolution_inv,\n  const float scan_origin_x, const float scan_origin_y, const float map_origin_x,\n  const float map_origin_y, const int num_cells_x, const int num_cells_y,\n  std::uint8_t free_space_value, std::uint8_t no_information_value,\n  std::uint8_t * __restrict__ costmap_tensor)\n{\n  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n  if (idx >= angle_bins * range_bins) return;\n\n  int angle_bin_index = idx / range_bins;\n  int range_bin_index = idx % range_bins;\n\n  if (range_bin_index == range_bins - 1) {\n    return;\n  }\n\n  std::uint64_t obs_range_and_x =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 0];\n  std::uint64_t obs_range_and_y =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 1];\n  std::uint32_t obs_range_int = obs_range_and_x >> 32;\n  float obs_range = obs_range_int * RANGE_DISCRETIZATION_RESOLUTION;\n  float obs_world_x = __uint_as_float(obs_range_and_x & 0xFFFFFFFF);\n  float obs_world_y = __uint_as_float(obs_range_and_y & 0xFFFFFFFF);\n\n  if (obs_range_int == 0xFFFFFFFF || obs_world_x < map_origin_x || obs_world_y < map_origin_y) {\n    return;\n  }\n\n  int next_raw_range_bin_index = range_bin_index + 1;\n  int next_obs_range_bin_index = range_bin_index + 1;\n\n  for (; next_raw_range_bin_index < range_bins - 1; next_raw_range_bin_index++) {\n    std::uint64_t next_raw_range_and_x =\n      raw_points_tensor[2 * (angle_bin_index * range_bins + next_raw_range_bin_index) + 0];\n    std::uint32_t next_raw_range_int = next_raw_range_and_x >> 32;\n    float next_raw_range = next_raw_range_int * RANGE_DISCRETIZATION_RESOLUTION;\n\n    if (next_raw_range_int != 0xFFFFFFFF && abs(next_raw_range - obs_range) > distance_margin) {\n      break;\n    }\n  }\n\n  for (; next_obs_range_bin_index < range_bins - 1; next_obs_range_bin_index++) {\n    std::uint64_t next_obs_range_and_x =\n      obstacle_points_tensor[2 * (angle_bin_index * range_bins + next_obs_range_bin_index) + 0];\n    std::uint32_t next_obs_range_int = next_obs_range_and_x >> 32;\n\n    if (next_obs_range_int != 0xFFFFFFFF) {\n      break;\n    }\n  }\n\n  const std::uint64_t next_obs_range_and_x =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + next_obs_range_bin_index) + 0];\n  const std::uint64_t next_obs_range_and_y =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + next_obs_range_bin_index) + 1];\n  const std::uint32_t next_obs_range_int = next_obs_range_and_x >> 32;\n  const float next_obs_world_x = __uint_as_float(next_obs_range_and_x & 0xFFFFFFFF);\n  const float next_obs_world_y = __uint_as_float(next_obs_range_and_y & 0xFFFFFFFF);\n\n  const std::uint64_t next_raw_range_and_x =\n    raw_points_tensor[2 * (angle_bin_index * range_bins + next_raw_range_bin_index) + 0];\n  const std::uint64_t next_raw_range_and_y =\n    raw_points_tensor[2 * (angle_bin_index * range_bins + next_raw_range_bin_index) + 1];\n  const std::uint32_t next_raw_range_int = next_raw_range_and_x >> 32;\n  const float next_raw_world_x = __uint_as_float(next_raw_range_and_x & 0xFFFFFFFF);\n  const float next_raw_world_y = __uint_as_float(next_raw_range_and_y & 0xFFFFFFFF);\n\n  if (next_obs_range_int == 0xFFFFFFFF) {\n    if (\n      next_raw_range_int == 0xFFFFFFFF || next_raw_world_x < map_origin_x ||\n      next_raw_world_y < map_origin_y) {\n      return;\n    }\n\n    // if there is no more obstacles after the current one but there are more raw points\n    // the space between the current obstacle and the next raw point flagged as no_information_value\n    autoware::occupancy_grid_map::utils::raytrace(\n      obs_world_x, obs_world_y, next_raw_world_x, next_raw_world_y, map_origin_x, map_origin_y,\n      map_resolution_inv, num_cells_x, num_cells_y, no_information_value, costmap_tensor);\n\n    autoware::occupancy_grid_map::utils::setCellValue(\n      next_raw_world_x, next_raw_world_y, map_origin_x, map_origin_y, map_resolution_inv,\n      num_cells_x, num_cells_y, free_space_value, costmap_tensor);\n    return;\n  }\n\n  float next_obs_range = next_obs_range_int * RANGE_DISCRETIZATION_RESOLUTION;\n  float obs_to_obs_distance = next_obs_range - obs_range;\n\n  if (obs_to_obs_distance <= distance_margin) {\n    return;\n  } else if (next_raw_range_int == 0xFFFFFFFF) {\n    // fill with no information between obstacles\n\n    if (next_obs_world_x < map_origin_x || next_obs_world_y < map_origin_y) {\n      return;\n    }\n\n    autoware::occupancy_grid_map::utils::raytrace(\n      obs_world_x, obs_world_y, next_obs_world_x, next_obs_world_y, map_origin_x, map_origin_y,\n      map_resolution_inv, num_cells_x, num_cells_y, no_information_value, costmap_tensor);\n\n    return;\n  }\n\n  float next_raw_range = next_raw_range_int * RANGE_DISCRETIZATION_RESOLUTION;\n  float raw_to_obs_distance = abs(next_raw_range - obs_range);\n\n  if (raw_to_obs_distance < obs_to_obs_distance) {\n    // fill with free space between raw and obstacle\n\n    if (next_raw_world_x < map_origin_x || next_raw_world_y < map_origin_y) {\n      return;\n    }\n\n    autoware::occupancy_grid_map::utils::raytrace(\n      obs_world_x, obs_world_y, next_raw_world_x, next_raw_world_y, map_origin_x, map_origin_y,\n      map_resolution_inv, num_cells_x, num_cells_y, no_information_value, costmap_tensor);\n\n    autoware::occupancy_grid_map::utils::setCellValue(\n      next_raw_world_x, next_raw_world_y, map_origin_x, map_origin_y, map_resolution_inv,\n      num_cells_x, num_cells_y, free_space_value, costmap_tensor);\n    return;\n  } else {\n    // fill with no information between obstacles\n\n    if (next_obs_world_x < map_origin_x || next_obs_world_y < map_origin_y) {\n      return;\n    }\n\n    autoware::occupancy_grid_map::utils::raytrace(\n      obs_world_x, obs_world_y, next_obs_world_x, next_obs_world_y, map_origin_x, map_origin_y,\n      map_resolution_inv, num_cells_x, num_cells_y, no_information_value, costmap_tensor);\n\n    return;\n  }\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "fillUnknownSpaceKernel",
+                                "functionCodeLine": "__global__ void fillUnknownSpaceKernel(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "100 | 点群ベースの occupancy_grid_map_fixed において、現在の障害物点の先にある領域を unknown で埋めるか、あるいは次の raw 点位置を free として確定するかを判定しながら costmap を更新するCUDAカーネル本体。updateWithPointCloud の仕組みの中でも、障害物間・障害物後方の空間補完ロジックそのものに相当する中核処理。",
+                                "id": "8488031e9db1d64f884545c8"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "autoware::occupancy_grid_map::utils::raytrace",
+                                "functionCodeLine": "    autoware::occupancy_grid_map::utils::raytrace(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                "comment": "98 | 現在の障害物点から次の raw 点または次の障害物点までのセル列を走査し、no_information_value で一括して埋める処理。unknown 領域を線分状に反映する実処理であり、このカーネルが occupancy grid をどう更新するかを理解するうえで最重要の呼び出しの一つ。",
+                                "id": "448a5aafeefc5c40df356ba4",
+                                "functionCodeContent": "inline void __device__ raytrace(\n  const float source_x, const float source_y, const float target_x, const float target_y,\n  const float origin_x, float origin_y, const float resolution_inv, const int size_x,\n  const int size_y, const std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int x0{};\n  unsigned int y0{};\n  const float ox{source_x};\n  const float oy{source_y};\n\n  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  // we can pre-compute the endpoints of the map outside of the inner loop... we'll need these later\n  const float resolution = 1.0 / resolution_inv;\n  const float map_end_x = origin_x + size_x * resolution;\n  const float map_end_y = origin_y + size_y * resolution;\n\n  float wx = target_x;\n  float wy = target_y;\n\n  // now we also need to make sure that the endpoint we're ray-tracing\n  // to isn't off the costmap and scale if necessary\n  const float a = wx - ox;\n  const float b = wy - oy;\n\n  // the minimum value to raytrace from is the origin\n  if (wx < origin_x) {\n    const float t = (origin_x - ox) / a;\n    wx = origin_x;\n    wy = oy + b * t;\n  }\n  if (wy < origin_y) {\n    const float t = (origin_y - oy) / b;\n    wx = ox + a * t;\n    wy = origin_y;\n  }\n\n  // the maximum value to raytrace to is the end of the map\n  if (wx > map_end_x) {\n    const float t = (map_end_x - ox) / a;\n    wx = map_end_x - .001;\n    wy = oy + b * t;\n  }\n  if (wy > map_end_y) {\n    const float t = (map_end_y - oy) / b;\n    wx = ox + a * t;\n    wy = map_end_y - .001;\n  }\n\n  // now that the vector is scaled correctly... we'll get the map coordinates of its endpoint\n  unsigned int x1{};\n  unsigned int y1{};\n\n  // check for legality just in case\n  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold\n  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);\n}"
+                            },
+                            "children": [
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "97 | レイトレース開始前に、始点のワールド座標をコストマップのセル座標へ変換する関数。始点がマップ外なら以降の処理は成立しないため、その場で処理を終了する。さらに終点の切り詰め後にも再度使われており、この関数全体の前後で座標系を橋渡しする中核になっている。",
+                                        "id": "48fbf86d6ecbd77d691d7136",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | ワールド座標系の点を occupancy grid map の格子インデックスへ変換する関数。updateWithPointCloud のような点群更新処理では、各点をどのセルに反映するか決める基礎処理であり、この関数が座標変換と範囲チェックをまとめて担う。",
+                                                "id": "d8232a3363d06342125799e5"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | ワールド座標から原点オフセットを引き、解像度の逆数を掛けた値を切り下げて、x方向の実座標をセル単位の離散インデックスへ変換する。occupancy grid では連続値を格子番号へ落とし込む重要な処理。",
+                                                "id": "386e7a939937c097b12af8eb"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | y方向についても同様に、ワールド座標をマップ格子の離散インデックスへ変換する。x,y の両方が求まることで、点群中の1点を occupancy grid 上の1セルへ対応付けできる。",
+                                                "id": "eef2e727c10cc0dcd6d3320e"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "    return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "91 | 入力座標がマップ原点より小さい場合や、変換後インデックスがマップサイズ外の場合に変換失敗を示す。updateWithPointCloud 側ではこの結果により、マップ外の点を更新対象から除外する仕組みにつながる。",
+                                                "id": "9e7b35109f88a34ba4126a17"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return true",
+                                                "functionCodeLine": "    return true;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "92 | 変換後の x,y インデックスが size_x, size_y の範囲内に収まっている場合に、座標変換成功を示す。これにより updateWithPointCloud は、その点を有効な occupancy grid セルとして更新できる。",
+                                                "id": "469de4779f8e63b3444d63f9"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "95 | マップ境界内に切り詰めた終点ワールド座標を、実際にレイトレース可能な終点セルへ変換する関数。この変換が成功して初めて、始点セルから終点セルまでの離散的な線分走査が可能になるため、raytraceLineへ接続する直前の重要な処理。",
+                                        "id": "43b13d9a4183c42a1be4d2bb",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | ワールド座標系の点 (wx, wy) を、地図原点と解像度に基づいて occupancy grid のセル座標 (mx, my) へ変換する関数。updateWithPointCloud で点群をグリッドへ反映する際の基礎となる座標変換処理そのもの。",
+                                                "id": "ebcbdd5818203d7c1d0cd239"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | ワールド座標から原点オフセットを引き、解像度の逆数を掛けた値を切り下げて、連続値を離散的なマップセル番号へ変換している。pointcloud を occupancy grid のどのマスに入れるかを決める中核処理。",
+                                                "id": "095e574fccc04864df49be20"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "wx < origin_x || wy < origin_y",
+                                                "functionCodeLine": "  if (wx < origin_x || wy < origin_y) {",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "92 | 入力座標が地図原点より小さい、つまり地図の左下境界より外側にあるかを先に判定している。範囲外の点を早期に除外することで、無効なセル変換を防いでいる。",
+                                                "id": "b0e988358de3e9485163b270"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "mx < size_x && my < size_y",
+                                                "functionCodeLine": "  if (mx < size_x && my < size_y) {",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "94 | 変換後のセル座標が地図サイズ内に収まっているかを確認している。updateWithPointCloud において、点群が occupancy grid 内の有効セルに対応するかを最終判定するチェック。",
+                                                "id": "8fe6b49fdfd5a794ff527fba"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "    return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "88 | 座標が原点より外側、またはセル変換後に地図サイズ外だった場合に変換失敗を返す。updateWithPointCloud 側ではこの結果を使って、その点を地図更新対象から除外すると考えられる。",
+                                                "id": "f6417a1c6137373dedbd6d61"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytraceLine",
+                                        "functionCodeLine": "  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "99 | 始点セルから終点セルまでの線分上をたどり、指定したコスト値をcostmap_tensorへ書き込む本体処理。updateWithPointCloudの仕組みを理解するうえで、点群から得た障害物方向に対してどのセル列を更新するかを実際に反映する最重要関数。",
+                                        "id": "2bbfe473c50d52706fd8d192",
+                                        "functionCodeContent": "inline __device__ void raytraceLine(\n  unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1, unsigned int max_length,\n  unsigned int min_length, unsigned int size_x, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  int dx_full = x1 - x0;\n  int dy_full = y1 - y0;\n\n  // we need to chose how much to scale our dominant dimension,\n  // based on the maximum length of the line\n  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);\n  if (dist < min_length) {\n    return;\n  }\n\n  unsigned int min_x0, min_y0;\n  if (dist > 0.0) {\n    // Adjust starting point and offset to start from min_length distance\n    min_x0 = (unsigned int)(x0 + dx_full / dist * min_length);\n    min_y0 = (unsigned int)(y0 + dy_full / dist * min_length);\n  } else {\n    // dist can be 0 if [x0, y0]==[x1, y1].\n    // In this case only this cell should be processed.\n    min_x0 = x0;\n    min_y0 = y0;\n  }\n  unsigned int offset = min_y0 * size_x + min_x0;\n\n  int dx = x1 - min_x0;\n  int dy = y1 - min_y0;\n\n  unsigned int abs_dx = abs(dx);\n  unsigned int abs_dy = abs(dy);\n\n  int offset_dx = dx > 0 ? 1 : -1;            // sign(dx);\n  int offset_dy = dy > 0 ? size_x : -size_x;  // sign(dy) * size_x;\n\n  constexpr float epsilon = 1e-6;\n  float scale =\n    (dist < epsilon)\n      ? 1.0f\n      : ((max_length / dist) < 1.0f ? (max_length / dist) : 1.0f);\n  // if x is dominant\n  if (abs_dx >= abs_dy) {\n    int error_y = abs_dx / 2;\n\n    bresenham2D(\n      abs_dx, abs_dy, error_y, offset_dx, offset_dy, offset, (unsigned int)(scale * abs_dx), cost,\n      costmap_tensor);\n    return;\n  }\n\n  // otherwise y is dominant\n  int error_x = abs_dy / 2;\n\n  bresenham2D(\n    abs_dy, abs_dx, error_x, offset_dy, offset_dx, offset, (unsigned int)(scale * abs_dy), cost,\n    costmap_tensor);\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "bresenham2D",
+                                                "functionCodeLine": "    bresenham2D(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "98 | raytraceLine の実際のセル更新を担当する中核関数で、計算済みの走査方向・誤差項・オフセット・描画長に基づいて、コストマップ上へレイをブレゼンハム法で書き込む。updateWithPointCloud の仕組みを追う上では、最終的にどのセルへ cost を反映するかを決める本体部分に相当する。",
+                                                "id": "e4259d7b1c98dcc1d91b8113",
+                                                "functionCodeContent": "inline __device__ void bresenham2D(\n  unsigned int abs_da, unsigned int abs_db, int error_b, int offset_a, int offset_b,\n  unsigned int offset, unsigned int max_length, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int end = (max_length < abs_da) ? max_length : abs_da;\n  for (unsigned int i = 0; i < end; ++i) {\n    costmap_tensor[offset] = cost;\n    offset += offset_a;\n    error_b += abs_db;\n    if ((unsigned int)error_b >= abs_da) {\n      offset += offset_b;\n      error_b -= abs_da;\n    }\n  }\n  costmap_tensor[offset] = cost;\n}"
+                                            },
+                                            "children": [
+                                                {
+                                                    "content": {
+                                                        "functionName": "bresenham2D",
+                                                        "functionCodeLine": "inline __device__ void bresenham2D(",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "99 | 2次元グリッド上でBresenham法による走査線描画を行う関数本体。occupancy_grid_map_fixed の updateWithPointCloud において、センサ原点から観測点までのセル列へコストを書き込む仕組みの中核と考えられる。",
+                                                        "id": "63540068ef05922a72904e2d"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "    costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "97 | 現在走査中のセルに対してコスト値を書き込む処理。点群由来の free / occupied などの状態を occupancy grid に反映する実処理であり、updateWithPointCloud の結果を直接形作る重要な1行。",
+                                                        "id": "8f97549f460c45ba8586c76c"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "offset += offset_a",
+                                                        "functionCodeLine": "    offset += offset_a;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "94 | 主方向のインデックス増分に従って、次に処理するセルへ1ステップ進める処理。Bresenham走査の基本進行を担い、レイ上の連続セル更新を成立させている。",
+                                                        "id": "ece983841974eceef8a6e0bb"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "if ((unsigned int)error_b >= abs_da)",
+                                                        "functionCodeLine": "    if ((unsigned int)error_b >= abs_da) {",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "96 | 誤差項に基づいて、副方向にも進む必要があるかを判定する条件分岐。直線を格子に近似するためのBresenham法の要点であり、斜め方向のレイを破綻なくセル列へ変換する。",
+                                                        "id": "2d13890be5fd1375c788efc5"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "  costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "92 | ループ終了後に終点セルへもコストを書き込む処理。走査線の最後のセルを取りこぼさないための補完であり、観測終端まで occupancy grid へ反映するために必要な処理。",
+                                                        "id": "b4a65678a3fd942bbd337876"
+                                                    },
+                                                    "children": []
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "sqrt",
+                                                "functionCodeLine": "  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "90 | 始点から終点までのユークリッド距離を計算し、min_length 未満ならレイ更新を打ち切るために使われる。また後続の開始位置補正や max_length による描画スケール計算にも使われるため、レイの有効範囲制御の基準となる。",
+                                                "id": "d42369fa3bcb57fef60ca08d"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "abs",
+                                                "functionCodeLine": "  unsigned int abs_dx = abs(dx);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "87 | x・y 方向の差分絶対値を求めて、どちらの軸が支配的かを判定するために使われる。これにより x 基準で走査するか y 基準で走査するかが決まり、bresenham2D に渡す引数構成も変わる。",
+                                                "id": "cd38e9ad111b4ced413508d3"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "raytraceLine",
+                                                "functionCodeLine": "inline __device__ void raytraceLine(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | updateWithPointCloud 内で障害物点や自由空間のレイを 2D コストマップへ反映するための下位処理そのもの。始終点差分、最小長・最大長による切り詰め、開始位置補正、支配軸判定、最終的なブレゼンハム走査までをまとめて行う。",
+                                                "id": "c8f1ae9d15c47d05d66b9370"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "sqrt",
+                                                "functionCodeLine": "  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "89 | dist を使って max_length / dist の比率を求め、レイをどこまで描画するかのスケールを決めている。これによりセンサ到達距離や更新上限に応じて、bresenham2D へ渡す描画長が制御される。",
+                                                "id": "a94c14a3c2146b9208e3540b"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "cell_raytrace_range",
+                                        "functionCodeLine": "  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "84 | レイトレース時の最大走査距離を事実上無制限として扱うための上限値。raytraceLineに渡され、通常の距離制限で途中打ち切りされないようにすることで、切り詰め後の終点セルまで線分全体を書き込ませる役割を持つ。",
+                                        "id": "7c88e39f92f16c1191170072"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytrace",
+                                        "functionCodeLine": "inline void __device__ raytrace(",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "93 | 始点・終点のワールド座標を受け取り、マップ境界内への切り詰め、セル座標変換、そしてraytraceLineによるコスト書き込みまでをまとめて行うCUDAデバイス関数。occupancy_grid_map_fixedのupdateWithPointCloudにおける『1本のレイを使った地図更新』の流れ全体を表している。",
+                                        "id": "6e1816e39a729de7c95f2070"
+                                    },
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "content": {
+                                "functionName": "autoware::occupancy_grid_map::utils::setCellValue",
+                                "functionCodeLine": "    autoware::occupancy_grid_map::utils::setCellValue(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                "comment": "94 | 次の raw 点の位置に対応するセルを free_space_value に設定する処理。障害物の先に raw 点があり、その地点までは unknown を引いたうえで終点セルを free に確定するため、unknown 埋めと free 空間確定の境界を作る役割を持つ。",
+                                "id": "ec24901df8b95a29120ef7ef",
+                                "functionCodeContent": "inline __device__ void setCellValue(\n  float wx, float wy, float origin_x, float origin_y, float resolution_inv, int size_x, int size_y,\n  std::uint8_t value, std::uint8_t * costmap_tensor)\n{\n  unsigned int mx, my;\n  if (!worldToMap(wx, wy, mx, my, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  costmap_tensor[my * size_x + mx] = value;\n}"
+                            },
+                            "children": [
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(wx, wy, mx, my, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "99 | ワールド座標系の点(wx, wy)を、occupancy gridの離散セル座標(mx, my)へ変換する中核関数であり、updateWithPointCloudの仕組みを理解する上で最も重要な要素。この変換により、点群上の実座標をグリッド上のどのセルに反映するかが決まる。また、マップ範囲外かどうかの判定も同時に担っている。",
+                                        "id": "94684a02eb322aa3474f4424"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "setCellValue",
+                                        "functionCodeLine": "inline __device__ void setCellValue(",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "97 | 与えられたワールド座標に対応するグリッドセルを求め、そのセルへ指定値を書き込むための補助関数。updateWithPointCloudの内部では、点群の各点をoccupancy grid上のセルへ落とし込んで値を更新する基本動作を表しており、セル更新の最小単位になっている。",
+                                        "id": "ec4c83e16d348429a3cd000a"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "costmap_tensor[my * size_x + mx]",
+                                        "functionCodeLine": "  costmap_tensor[my * size_x + mx] = value;",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "95 | 2次元のマップ座標(mx, my)を1次元配列のインデックスへ変換し、対象セルへ値を書き込む処理。occupancy_grid_map_fixedの実体が線形バッファで保持されていることを示しており、updateWithPointCloudで最終的にどのセルが障害物・自由空間・未知として更新されるかはこの書き込みで確定する。",
+                                        "id": "cf66df9dd54101749944a8fc"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "!worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(wx, wy, mx, my, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "91 | 座標変換に失敗した、つまり点がマップ範囲外である場合にその点の更新を打ち切るための判定。updateWithPointCloudでは全ての点を無条件に書き込むのではなく、有効なセルに対応する点だけを反映する仕組みになっていることが分かる。",
+                                        "id": "28f5c8139e85c10a1795d15c"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "unsigned int mx, my",
+                                        "functionCodeLine": "  unsigned int mx, my;",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "84 | ワールド座標から変換されたグリッド上の整数セル座標を保持する変数。updateWithPointCloudでは点群の連続値座標を直接使うのではなく、まずこのような離散インデックスへ変換してからoccupancy gridを更新する。",
+                                        "id": "cac476d16c35dbd6076e1f96"
+                                    },
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "content": {
+                                "functionName": "abs",
+                                "functionCodeLine": "    if (next_raw_range_int != 0xFFFFFFFF && abs(next_raw_range - obs_range) > distance_margin) {",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "83 | 現在障害物点と次 raw 点の距離差が distance_margin を超えた最初の raw 点を探すための判定に使われている。updateWithPointCloud の unknown 埋め判定では、『現在障害物の直後に連続している測距点は同一塊とみなし、それを超えた点を次候補にする』という探索条件の中核になっている。",
+                                "id": "2431c98af1d19d222f316610"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "abs",
+                                "functionCodeLine": "  float raw_to_obs_distance = abs(next_raw_range - obs_range);",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "88 | 現在障害物から見て、次 raw 点と次障害物のどちらが先に現れるかを距離差で比較するために使われている。この比較結果によって『raw 点まで unknown を引いて終点を free にする』か『障害物まで unknown を引く』かが決まるため、分岐ロジックの要所。",
+                                "id": "f7b46b53414e63c23d4ccb31"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "blocksPerGrid",
+                        "functionCodeLine": "  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "94 | 角度ビン数と距離ビン数から総処理要素数を求め、threadsPerBlock で割って切り上げたグリッド数を計算している。各ビンに対して並列処理を割り当てるための CUDA 実行構成を決める重要な計算。",
+                        "id": "2c75c22a930f91e34aa13d68"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "threadsPerBlock",
+                        "functionCodeLine": "  const int threadsPerBlock = 256;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "88 | CUDA の1ブロックあたりスレッド数を 256 に固定している。カーネル起動設定の基準となる値であり、unknown space の補完処理が GPU 上でどう並列化されるかを決める。",
+                        "id": "2dd1d6b1e1154364a88134c9"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "stream",
+                        "functionCodeLine": "  fillUnknownSpaceKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "86 | CUDA カーネルを指定ストリーム上で非同期実行するための引数。updateWithPointCloud の処理が CPU 側で即時終了可能で、結果反映は GPU 実行完了に委ねる前提で進むことを示している。",
+                        "id": "9944ba73b124aebcb4ea5413"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "angle_bins * range_bins",
+                        "functionCodeLine": "  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "91 | 処理対象の総数を角度ビン数と距離ビン数の積で表している。occupancy grid の未知空間補完が、極座標状に離散化されたビン単位の処理として設計されていることが読み取れる。",
+                        "id": "bfb640e8bdc7d370d33346e4"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "map_fixed::fillObstaclesLaunch",
+                "functionCodeLine": "  map_fixed::fillObstaclesLaunch(",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                "comment": "97 | 障害物点群テンソルを使って、対応するグリッドセルをLETHAL_OBSTACLEとして最終マーキングするGPUカーネルの起動部。updateWithPointCloudの最終出力として障害物セルを確定する処理。",
+                "id": "a4dbb8d6758127585736625c",
+                "functionCodeContent": "void fillObstaclesLaunch(\n  const std::uint64_t * obstacle_points_tensor, const float distance_margin,\n  const std::size_t angle_bins, const std::size_t range_bins, const float map_resolution_inv,\n  const float map_origin_x, const float map_origin_y, const int num_cells_x, const int num_cells_y,\n  std::uint8_t obstacle_value, std::uint8_t * costmap_tensor, cudaStream_t stream)\n{\n  const int threadsPerBlock = 256;\n  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;\n\n  fillObstaclesKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(\n    obstacle_points_tensor, distance_margin, angle_bins, range_bins, map_resolution_inv,\n    map_origin_x, map_origin_y, num_cells_x, num_cells_y, obstacle_value, costmap_tensor);\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "fillObstaclesKernel",
+                        "functionCodeLine": "  fillObstaclesKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "99 | 障害物点群をもとにコストマップへ障害物値を書き込むCUDAカーネル本体を起動している行。updateWithPointCloudの仕組みを追ううえで、実際の障害物反映処理がGPU上で始まる中心部分にあたる。",
+                        "id": "f34eaf2384bceda23280fc6e",
+                        "functionCodeContent": "__global__ void fillObstaclesKernel(\n  const std::uint64_t * __restrict__ obstacle_points_tensor, const float distance_margin,\n  const std::size_t angle_bins, const std::size_t range_bins, const float map_resolution_inv,\n  const float map_origin_x, const float map_origin_y, const int num_cells_x, const int num_cells_y,\n  std::uint8_t obstacle_value, std::uint8_t * __restrict__ costmap_tensor)\n{\n  int idx = blockIdx.x * blockDim.x + threadIdx.x;\n  if (idx >= angle_bins * range_bins) return;\n\n  int angle_bin_index = idx / range_bins;\n  int range_bin_index = idx % range_bins;\n\n  std::uint64_t range_and_x =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 0];\n  std::uint64_t range_and_y =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 1];\n\n  std::uint32_t range_int = range_and_x >> 32;\n  float range = range_int * RANGE_DISCRETIZATION_RESOLUTION;\n  float world_x = __uint_as_float(range_and_x & 0xFFFFFFFF);\n  float world_y = __uint_as_float(range_and_y & 0xFFFFFFFF);\n\n  if (range < 0.0 || range_int == 0xFFFFFFFF) {\n    return;\n  }\n\n  autoware::occupancy_grid_map::utils::setCellValue(\n    world_x, world_y, map_origin_x, map_origin_y, map_resolution_inv, num_cells_x, num_cells_y,\n    obstacle_value, costmap_tensor);\n\n  // Look for the next obstacle point\n  int next_obs_range_bin_index = range_bin_index + 1;\n  for (; next_obs_range_bin_index < range_bins - 1; next_obs_range_bin_index++) {\n    std::uint64_t next_obs_range_and_x =\n      obstacle_points_tensor[2 * (angle_bin_index * range_bins + next_obs_range_bin_index) + 0];\n    std::uint32_t next_obs_range_int = next_obs_range_and_x >> 32;\n\n    if (next_obs_range_int != 0xFFFFFFFF) {\n      break;\n    }\n  }\n\n  next_obs_range_bin_index =\n    next_obs_range_bin_index < range_bins - 1 ? next_obs_range_bin_index : range_bins - 1;\n\n  std::uint64_t next_obs_range_and_x =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 0];\n  std::uint64_t next_obs_range_and_y =\n    obstacle_points_tensor[2 * (angle_bin_index * range_bins + range_bin_index) + 1];\n\n  std::uint32_t next_obs_range_int = next_obs_range_and_x >> 32;\n  float next_obs_range = next_obs_range_int * RANGE_DISCRETIZATION_RESOLUTION;\n  float next_obs_world_x = __uint_as_float(next_obs_range_and_x & 0xFFFFFFFF);\n  float next_obs_world_y = __uint_as_float(next_obs_range_and_y & 0xFFFFFFFF);\n\n  if (next_obs_range_int == 0xFFFFFFFF || abs(next_obs_range - range) > distance_margin) {\n    return;\n  }\n\n  if (next_obs_world_x < map_origin_x || next_obs_world_y < map_origin_y) {\n    return;\n  }\n\n  autoware::occupancy_grid_map::utils::raytrace(\n    world_x, world_y, next_obs_world_x, next_obs_world_y, map_origin_x, map_origin_y,\n    map_resolution_inv, num_cells_x, num_cells_y, obstacle_value, costmap_tensor);\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "autoware::occupancy_grid_map::utils::setCellValue",
+                                "functionCodeLine": "  autoware::occupancy_grid_map::utils::setCellValue(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                "comment": "98 | 現在の障害点のワールド座標をコストマップ上のセルへ変換し、そのセルに障害物値を書き込む関数。updateWithPointCloud における『点群から障害セルを直接反映する』基本動作に相当し、このカーネルの中心処理の一つ。",
+                                "id": "519911575cf26ba5dc84dfd5",
+                                "functionCodeContent": "void __device__ setCellValue(\n  float wx, float wy, float origin_x, float origin_y, float resolution_inv, int size_x, int size_y,\n  std::uint8_t value, std::uint8_t * costmap_tensor);\n\ninline __device__ void bresenham2D(\n  unsigned int abs_da, unsigned int abs_db, int error_b, int offset_a, int offset_b,\n  unsigned int offset, unsigned int max_length, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int end = (max_length < abs_da) ? max_length : abs_da;\n  for (unsigned int i = 0; i < end; ++i) {\n    costmap_tensor[offset] = cost;\n    offset += offset_a;\n    error_b += abs_db;\n    if ((unsigned int)error_b >= abs_da) {\n      offset += offset_b;\n      error_b -= abs_da;\n    }\n  }\n  costmap_tensor[offset] = cost;\n}"
+                            },
+                            "children": [
+                                {
+                                    "content": {
+                                        "functionName": "bresenham2D",
+                                        "functionCodeLine": "inline __device__ void bresenham2D(",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "99 | 占有グリッド更新でレイ上のセルを順次なぞるための中核関数。updateWithPointCloud の仕組みを理解するうえで、点から点へどのセル列に値を書き込むかを決める基本ロジックそのものになっている。",
+                                        "id": "56304d0ae58d3c1c66da2ce7"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "costmap_tensor[offset] = cost",
+                                        "functionCodeLine": "    costmap_tensor[offset] = cost;",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "96 | 現在走査中のセルにコスト値を書き込む処理。pointcloud から求めたレイ上の各セルを free / occupied などの値で更新する実体部分であり、occupancy_grid_map_fixed の更新結果に直接対応する。",
+                                        "id": "fbd9ce2a7432cabe56688cd7"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "offset += offset_a",
+                                        "functionCodeLine": "    offset += offset_a;",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "92 | ブレゼンハム法の主方向に1セル進める処理。レイキャストで連続セルをたどる際の基本移動であり、updateWithPointCloud が点群に沿ってグリッドを更新する流れの中心となる。",
+                                        "id": "e20425bac1e23455bea70d51"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "if ((unsigned int)error_b >= abs_da)",
+                                        "functionCodeLine": "    if ((unsigned int)error_b >= abs_da) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "94 | 誤差項が閾値を超えたときに副方向にも進むかを判定する分岐。これにより斜め方向のレイでも格子上で破綻なく近似でき、pointcloud のビーム経路をグリッドへ正しく投影できる。",
+                                        "id": "a7362c21e9b41148e919e01f"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "costmap_tensor[offset] = cost",
+                                        "functionCodeLine": "  costmap_tensor[offset] = cost;",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "90 | ループ終了後に終端セルへコスト値を書き込む処理。ブレゼンハム走査の最後のセルを取りこぼさないための重要な1行で、障害物セルやビーム終端の反映に関わる。",
+                                        "id": "ce16b2ee6d0810495c0830b3"
+                                    },
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "content": {
+                                "functionName": "autoware::occupancy_grid_map::utils::raytrace",
+                                "functionCodeLine": "  autoware::occupancy_grid_map::utils::raytrace(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                "comment": "100 | 現在の障害点と次の障害点の間をグリッド上で走査し、間のセルを障害物値で埋める関数。離散化された点群だけでは途切れる障害物を連続的に表現するための処理で、updateWithPointCloud の埋め処理の仕組みを理解する上で最も重要な要素。",
+                                "id": "c0687b2d1437ed9d665d2f7b",
+                                "functionCodeContent": "inline void __device__ raytrace(\n  const float source_x, const float source_y, const float target_x, const float target_y,\n  const float origin_x, float origin_y, const float resolution_inv, const int size_x,\n  const int size_y, const std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int x0{};\n  unsigned int y0{};\n  const float ox{source_x};\n  const float oy{source_y};\n\n  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  // we can pre-compute the endpoints of the map outside of the inner loop... we'll need these later\n  const float resolution = 1.0 / resolution_inv;\n  const float map_end_x = origin_x + size_x * resolution;\n  const float map_end_y = origin_y + size_y * resolution;\n\n  float wx = target_x;\n  float wy = target_y;\n\n  // now we also need to make sure that the endpoint we're ray-tracing\n  // to isn't off the costmap and scale if necessary\n  const float a = wx - ox;\n  const float b = wy - oy;\n\n  // the minimum value to raytrace from is the origin\n  if (wx < origin_x) {\n    const float t = (origin_x - ox) / a;\n    wx = origin_x;\n    wy = oy + b * t;\n  }\n  if (wy < origin_y) {\n    const float t = (origin_y - oy) / b;\n    wx = ox + a * t;\n    wy = origin_y;\n  }\n\n  // the maximum value to raytrace to is the end of the map\n  if (wx > map_end_x) {\n    const float t = (map_end_x - ox) / a;\n    wx = map_end_x - .001;\n    wy = oy + b * t;\n  }\n  if (wy > map_end_y) {\n    const float t = (map_end_y - oy) / b;\n    wx = ox + a * t;\n    wy = map_end_y - .001;\n  }\n\n  // now that the vector is scaled correctly... we'll get the map coordinates of its endpoint\n  unsigned int x1{};\n  unsigned int y1{};\n\n  // check for legality just in case\n  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {\n    return;\n  }\n\n  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold\n  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);\n}"
+                            },
+                            "children": [
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(ox, oy, x0, y0, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "97 | レイの始点となるワールド座標をコストマップ上のセル座標へ変換し、マップ内に入っているかを確認する。始点が不正なら以降のレイトレース処理は成立しないため即座に終了する。",
+                                        "id": "2ed8b4b7bbf78b2c75270e1d",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | ワールド座標系の点 (wx, wy) を occupancy grid のマップインデックス (mx, my) に変換する関数で、updateWithPointCloud のような点群反映処理における入口となる。点群の各点をどのグリッドセルに対応付けるかを決めるため、この仕組みの理解に最も直接関係する。",
+                                                "id": "a23f4a0dc02bf6d78c5b67c4"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | 原点からの相対距離を解像度逆数でスケーリングした結果を切り下げ、連続値のワールド座標を離散的なグリッドセル番号へ落とし込む。occupancy grid で『どのセルに入るか』を決める本質的な変換処理。",
+                                                "id": "96dfb82b11fcd4d7123e84cf"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "94 | y方向についても x方向と同様に、ワールド座標をマップの行インデックスへ変換する。点群を occupancy grid に書き込む際は x, y の両方が必要であり、updateWithPointCloud のセル決定処理を構成する重要な一部。",
+                                                "id": "5eef0d4ad4a709de9ec37061"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return true",
+                                                "functionCodeLine": "    return true;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "88 | 変換後のマップインデックス mx, my が size_x, size_y の範囲内であることを確認したうえで、座標変換成功を呼び出し元へ通知する。updateWithPointCloud 側ではこの成功結果を使って、その点を occupancy grid 更新対象として扱える。",
+                                                "id": "99e9f96df4096b5cffed4d95"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "  return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "87 | ワールド座標が原点より外にある、または変換後インデックスがマップ範囲外である場合に失敗を返す。これにより updateWithPointCloud では、マップ外の点を occupancy grid 更新から除外できる。",
+                                                "id": "9b0d3d707de5d7a124d84386"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "worldToMap",
+                                        "functionCodeLine": "  if (!worldToMap(wx, wy, x1, y1, origin_x, origin_y, resolution_inv, size_x, size_y)) {",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "94 | マップ境界に合わせて補正した終点のワールド座標を、実際にレイを書き込むためのマップセル座標へ変換する。境界内に収まるよう調整した後の終点を確定する重要な変換処理。",
+                                        "id": "06787d7bddd317fae9d73ef3",
+                                        "functionCodeContent": "inline __device__ bool worldToMap(\n  float wx, float wy, unsigned int & mx, unsigned int & my, float origin_x, float origin_y,\n  float resolution_inv, int size_x, int size_y)\n{\n  if (wx < origin_x || wy < origin_y) {\n    return false;\n  }\n\n  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));\n  my = static_cast<int>(std::floor((wy - origin_y) * resolution_inv));\n\n  if (mx < size_x && my < size_y) {\n    return true;\n  }\n\n  return false;\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "worldToMap",
+                                                "functionCodeLine": "inline __device__ bool worldToMap(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | ワールド座標系の点 (wx, wy) を occupancy grid のセル座標 (mx, my) に変換する関数。updateWithPointCloud のような点群反映処理では、各点をまずグリッド上のどのセルに対応付けるかが必要になるため、この関数は点群を地図へ書き込む前段の基礎処理として非常に重要である。",
+                                                "id": "555fcd8155e60ff0140a7466"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "std::floor",
+                                                "functionCodeLine": "  mx = static_cast<int>(std::floor((wx - origin_x) * resolution_inv));",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | ワールド座標から原点を引いてマップ内の相対位置に直し、それに解像度の逆数を掛けた値を切り下げてセル番号へ変換している。つまり連続値の座標を離散的な occupancy grid のインデックスへ落とし込む中核処理であり、updateWithPointCloud で点群をどのセルに入れるかを決める仕組みそのものに対応する。",
+                                                "id": "974945b54acc6f93a5775d99"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return false",
+                                                "functionCodeLine": "    return false;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "88 | 入力座標がマップ原点より小さい場合、または変換後インデックスがサイズ範囲外の場合に失敗として返す。updateWithPointCloud の観点では、マップ外の点を occupancy grid 更新対象から除外するためのガードとして機能する。",
+                                                "id": "5e670b7b5d632450df1d6a67"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "return true",
+                                                "functionCodeLine": "    return true;",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "90 | 変換後のセルインデックスが size_x, size_y の範囲内に収まっているときに成功を返す。これにより呼び出し側は、その点が有効なグリッドセルに対応付けられたと判断して occupancy の更新処理へ進める。",
+                                                "id": "36e20260bf1cea8513669f93"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "mx < size_x && my < size_y",
+                                                "functionCodeLine": "  if (mx < size_x && my < size_y) {",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "93 | 変換されたセル座標がマップの横幅・縦幅の範囲内にあるかを判定する条件。pointcloud を occupancy grid に反映する際、無効なインデックスアクセスを防ぎ、更新対象を地図内部のセルのみに限定するための重要な範囲チェックである。",
+                                                "id": "58816d5ed7e23f45d945fa5f"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytraceLine",
+                                        "functionCodeLine": "  raytraceLine(x0, y0, x1, y1, cell_raytrace_range, 0, size_x, cost, costmap_tensor);",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "99 | 始点セルから終点セルまでの直線上のセル列をたどり、指定されたcostをcostmap_tensorへ書き込む本体処理。updateWithPointCloudにおける空間のレイ更新の中核であり、観測点までの経路をマップへ反映する。",
+                                        "id": "1077f5953ac64057fd4155a0",
+                                        "functionCodeContent": "inline __device__ void raytraceLine(\n  unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1, unsigned int max_length,\n  unsigned int min_length, unsigned int size_x, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  int dx_full = x1 - x0;\n  int dy_full = y1 - y0;\n\n  // we need to chose how much to scale our dominant dimension,\n  // based on the maximum length of the line\n  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);\n  if (dist < min_length) {\n    return;\n  }\n\n  unsigned int min_x0, min_y0;\n  if (dist > 0.0) {\n    // Adjust starting point and offset to start from min_length distance\n    min_x0 = (unsigned int)(x0 + dx_full / dist * min_length);\n    min_y0 = (unsigned int)(y0 + dy_full / dist * min_length);\n  } else {\n    // dist can be 0 if [x0, y0]==[x1, y1].\n    // In this case only this cell should be processed.\n    min_x0 = x0;\n    min_y0 = y0;\n  }\n  unsigned int offset = min_y0 * size_x + min_x0;\n\n  int dx = x1 - min_x0;\n  int dy = y1 - min_y0;\n\n  unsigned int abs_dx = abs(dx);\n  unsigned int abs_dy = abs(dy);\n\n  int offset_dx = dx > 0 ? 1 : -1;            // sign(dx);\n  int offset_dy = dy > 0 ? size_x : -size_x;  // sign(dy) * size_x;\n\n  constexpr float epsilon = 1e-6;\n  float scale =\n    (dist < epsilon)\n      ? 1.0f\n      : ((max_length / dist) < 1.0f ? (max_length / dist) : 1.0f);\n  // if x is dominant\n  if (abs_dx >= abs_dy) {\n    int error_y = abs_dx / 2;\n\n    bresenham2D(\n      abs_dx, abs_dy, error_y, offset_dx, offset_dy, offset, (unsigned int)(scale * abs_dx), cost,\n      costmap_tensor);\n    return;\n  }\n\n  // otherwise y is dominant\n  int error_x = abs_dy / 2;\n\n  bresenham2D(\n    abs_dy, abs_dx, error_x, offset_dy, offset_dx, offset, (unsigned int)(scale * abs_dy), cost,\n    costmap_tensor);\n}"
+                                    },
+                                    "children": [
+                                        {
+                                            "content": {
+                                                "functionName": "sqrt",
+                                                "functionCodeLine": "  float dist = sqrt((float)(dx_full * dx_full + dy_full * dy_full));  // hypot(dx_full, dy_full);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "95 | 始点と終点の差分ベクトルから線分長 dist を計算している。この距離は、短すぎる線分を無視する判定、min_length だけ進めた開始位置の計算、さらに max_length による描画スケール計算の基準になるため、updateWithPointCloud のレイ反映処理の中心的な長さ指標になっている。",
+                                                "id": "22986046417893b33700d215"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "abs",
+                                                "functionCodeLine": "  unsigned int abs_dx = abs(dx);",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "84 | 残りの走査差分 dx, dy の絶対値を求め、どちらの軸が支配的かを判定するための準備をしている。Bresenham 法で x 優勢か y 優勢かを決める重要な前処理であり、レイをグリッドへ離散化して反映する仕組みに直結する。",
+                                                "id": "0d4afb8e394de61f39bcbf73"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "bresenham2D",
+                                                "functionCodeLine": "    bresenham2D(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "99 | 計算済みの差分、誤差項、インデックス増分、開始オフセット、描画長さ、書き込むコスト値を使って、コストマップ上へ実際にレイを走査・反映する本体処理。raytraceLine は事前計算と分岐を担当し、最終的な occupancy_grid_map_fixed への線描画はこの関数呼び出しで行われる。",
+                                                "id": "786b0930f9610fed1dccc04d",
+                                                "functionCodeContent": "inline __device__ void bresenham2D(\n  unsigned int abs_da, unsigned int abs_db, int error_b, int offset_a, int offset_b,\n  unsigned int offset, unsigned int max_length, std::uint8_t cost, std::uint8_t * costmap_tensor)\n{\n  unsigned int end = (max_length < abs_da) ? max_length : abs_da;\n  for (unsigned int i = 0; i < end; ++i) {\n    costmap_tensor[offset] = cost;\n    offset += offset_a;\n    error_b += abs_db;\n    if ((unsigned int)error_b >= abs_da) {\n      offset += offset_b;\n      error_b -= abs_da;\n    }\n  }\n  costmap_tensor[offset] = cost;\n}"
+                                            },
+                                            "children": [
+                                                {
+                                                    "content": {
+                                                        "functionName": "bresenham2D",
+                                                        "functionCodeLine": "inline __device__ void bresenham2D(",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "100 | 整数グリッド上にBresenham法で直線を描画する中核関数であり、occupancy_grid_map_fixed の updateWithPointCloud におけるレイ描画・セル更新の仕組みを理解するうえで最も重要な処理本体です。主方向・従方向のオフセット、誤差項、最大長、書き込むコスト値を受け取り、制限付きでセルを順に塗っていきます。",
+                                                        "id": "f70912303a554661f48d3e66"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "    costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "97 | 現在注目しているコストマップセルに値を書き込む処理です。pointcloud から求めたレイ上の各グリッドセルを free / occupied などの値で更新する実際の反映点に相当し、この関数の目的そのものです。",
+                                                        "id": "fe5b06d503f412f03a67adbc"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "offset += offset_a",
+                                                        "functionCodeLine": "    offset += offset_a;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "92 | 主方向へ1セル進める処理です。Bresenham法では毎ステップ必ず主方向に進みながら、必要に応じて従方向も補正するため、レイをグリッド上で前進させる基礎動作になっています。",
+                                                        "id": "4f0118e03a194bc6416593ef"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "if ((unsigned int)error_b >= abs_da)",
+                                                        "functionCodeLine": "    if ((unsigned int)error_b >= abs_da) {",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "95 | 誤差項が閾値を超えたかを判定し、超えた場合に従方向にも1セル進めるための分岐です。これにより実数直線に近い離散セル列を作ることができ、斜め線や傾きのあるレイを正しくグリッドへ落とし込めます。",
+                                                        "id": "06bb0f07d8d1293750ed427d"
+                                                    },
+                                                    "children": []
+                                                },
+                                                {
+                                                    "content": {
+                                                        "functionName": "costmap_tensor[offset] = cost",
+                                                        "functionCodeLine": "  costmap_tensor[offset] = cost;",
+                                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                        "comment": "90 | ループ終了後に終点側のセルへ最終書き込みを行う処理です。for ループ内で到達しきらない最後の1セルを確実に反映し、線分の終端が欠けないようにしています。",
+                                                        "id": "eb31dd56100c565023826c6b"
+                                                    },
+                                                    "children": []
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "raytraceLine",
+                                                "functionCodeLine": "inline __device__ void raytraceLine(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "97 | 点群から得た始点・終点の情報をグリッド線分へ変換するためのレイトレース補助関数。min_length と max_length による描画範囲調整、Bresenham 法に必要な軸選択と初期化、最終的な bresenham2D 呼び出しまでをまとめており、updateWithPointCloud の線反映ロジックの入口として非常に関連が深い。",
+                                                "id": "de0482dad8df38210d92fe5c"
+                                            },
+                                            "children": []
+                                        },
+                                        {
+                                            "content": {
+                                                "functionName": "bresenham2D",
+                                                "functionCodeLine": "  bresenham2D(",
+                                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                                "comment": "96 | x 優勢・y 優勢の両分岐の最終到達点で呼ばれ、scale に応じた描画長だけコストマップを更新する。これにより pointcloud の1本のレイが occupancy grid 上の複数セルへ離散的に反映され、障害物や自由空間の更新処理を支える。",
+                                                "id": "8acb89f3cf1e375cdefc0d8a"
+                                            },
+                                            "children": []
+                                        }
+                                    ]
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "cell_raytrace_range",
+                                        "functionCodeLine": "  constexpr unsigned int cell_raytrace_range = 10000;  // large number to ignore range threshold",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "91 | レイトレースの最大セル長として非常に大きな値を設定し、実質的に距離制限なしで raytraceLine を実行できるようにしている。終点までレイを途切れさせずに反映するための設定値。",
+                                        "id": "6ecd904ad3ff895c0563c727"
+                                    },
+                                    "children": []
+                                },
+                                {
+                                    "content": {
+                                        "functionName": "raytrace",
+                                        "functionCodeLine": "inline void __device__ raytrace(",
+                                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/include/autoware/probabilistic_occupancy_grid_map/utils/utils_kernel.hpp",
+                                        "comment": "96 | 始点・終点のワールド座標を受け取り、必要に応じて終点をマップ境界で切り詰めたうえで、マップ座標系へ変換し、最終的に raytraceLine でコストマップへ書き込む一連の流れを担当するGPUデバイス関数。updateWithPointCloudのレイベース更新の仕組み全体を表している。",
+                                        "id": "4d3e6895a03078f5eedd52df"
+                                    },
+                                    "children": []
+                                }
+                            ]
+                        },
+                        {
+                            "content": {
+                                "functionName": "fillObstaclesKernel",
+                                "functionCodeLine": "__global__ void fillObstaclesKernel(",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "97 | 障害点テンソルを角度ビン×距離ビンで走査し、各点を障害セルとして記録しつつ、近接する次の障害点との間を補間して埋めるGPUカーネル。occupancy_grid_map_fixed の updateWithPointCloud における障害物反映ロジック本体として読める。",
+                                "id": "8caf9ede888eaedadfb45fb0"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "abs",
+                                "functionCodeLine": "  if (next_obs_range_int == 0xFFFFFFFF || abs(next_obs_range - range) > distance_margin) {",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "87 | 現在の障害点と次の障害点の距離差が distance_margin を超えるかを判定し、同一障害物として連結してよいかを見極める条件に使われている。無関係な点同士を raytrace で誤って結ばないための重要なフィルタ。",
+                                "id": "c31821fa90dc078c795915ba"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "obstacle_points_tensor",
+                                "functionCodeLine": "  const std::uint64_t * __restrict__ obstacle_points_tensor, const float distance_margin,",
+                                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                                "comment": "84 | 各角度ビン・距離ビンに対応する障害点の距離情報とワールド座標を格納した入力テンソル。このカーネルはまずここから現在点と次点を復元して setCellValue と raytrace に渡すため、updateWithPointCloud の入力データ構造として本質的に重要。",
+                                "id": "7c8f7584b433e92063dd1b87"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "blocksPerGrid",
+                        "functionCodeLine": "  const int blocksPerGrid = (angle_bins * range_bins + threadsPerBlock - 1) / threadsPerBlock;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "95 | 角度ビン数と距離ビン数から総処理数を求め、1ブロックあたりのスレッド数で割って必要なCUDAブロック数を計算している。障害物反映をどの並列度で実行するかを決める重要な準備処理。",
+                        "id": "86244dde1359632437efe778"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "threadsPerBlock",
+                        "functionCodeLine": "  const int threadsPerBlock = 256;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "90 | CUDA実行時の1ブロックあたりスレッド数を256に固定している。カーネル実行構成の基本パラメータであり、後続のblocksPerGrid計算とfillObstaclesKernel起動設定の前提になる。",
+                        "id": "51bddf9b2697b9cf1fa8df7e"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "stream",
+                        "functionCodeLine": "  fillObstaclesKernel<<<blocksPerGrid, threadsPerBlock, 0, stream>>>(",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "88 | CUDAストリームを指定してカーネルを起動しており、障害物値のコストマップ反映処理を指定ストリーム上で非同期実行する構成になっている。updateWithPointCloudのGPU処理フローを理解するうえで重要。",
+                        "id": "5b87359f3bed86c2cd44e81c"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "costmap_tensor",
+                        "functionCodeLine": "    map_origin_x, map_origin_y, num_cells_x, num_cells_y, obstacle_value, costmap_tensor);",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed_kernel.cu",
+                        "comment": "86 | CUDAカーネルへ渡される出力先コストマップバッファ。障害物点群、距離マージン、地図原点・解像度などの変換パラメータとともに渡され、最終的に障害物セル値を書き込む対象となる。",
+                        "id": "f57f4f273b35b7876c0d0753"
+                    },
+                    "children": []
+                }
+            ]
+        },
+        {
+            "content": {
+                "functionName": "utils::getTransformMatrix",
+                "functionCodeLine": "  mat_map_ = utils::getTransformMatrix(robot_pose);",
+                "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/utils/utils.cpp",
+                "comment": "88 | robot_poseおよびscan2map_poseから座標変換行列を生成する処理。点群をmap系・scan系で正しくビニングする前提となる変換情報を作っており、prepareTensorLaunchの入力準備として重要である。",
+                "id": "207ec7ce07bab016697c4acd",
+                "functionCodeContent": "Eigen::Matrix4f getTransformMatrix(const geometry_msgs::msg::Pose & pose)\n{\n  auto transform = autoware_utils::pose2transform(pose);\n  Eigen::Matrix4f tf_matrix = tf2::transformToEigen(transform).matrix().cast<float>();\n  return tf_matrix;\n}"
+            },
+            "children": [
+                {
+                    "content": {
+                        "functionName": "autoware_utils::pose2transform",
+                        "functionCodeLine": "  auto transform = autoware_utils::pose2transform(pose);",
+                        "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                        "comment": "98 | geometry_msgs::msg::Pose を平行移動と回転を持つ変換情報へ変換する。入力Poseを後段のEigen行列へ落とし込むための起点であり、この関数全体の目的に最も直接対応している。",
+                        "id": "6286374f3b86759a61ab45d6",
+                        "functionCodeContent": "geometry_msgs::msg::Transform pose2transform(const geometry_msgs::msg::Pose & pose)\n{\n  geometry_msgs::msg::Transform transform;\n  transform.translation.x = pose.position.x;\n  transform.translation.y = pose.position.y;\n  transform.translation.z = pose.position.z;\n  transform.rotation = pose.orientation;\n  return transform;\n}"
+                    },
+                    "children": [
+                        {
+                            "content": {
+                                "functionName": "geometry_msgs::msg::Transform",
+                                "functionCodeLine": "  geometry_msgs::msg::Transform transform;",
+                                "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                                "comment": "88 | Pose から変換結果を格納する Transform オブジェクトを生成している。この関数の中心となるデータ生成処理であり、以降の translation と rotation の各フィールド設定先になる。",
+                                "id": "2b966cff7d5e0e152b3b3b84"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "transform.translation.x",
+                                "functionCodeLine": "  transform.translation.x = pose.position.x;",
+                                "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                                "comment": "91 | 入力 Pose の position.x を Transform の translation.x にそのままコピーしている。位置情報の x 成分を Pose 表現から Transform 表現へ写す処理。",
+                                "id": "40f5316b672dd686a52e2421"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "transform.translation.y",
+                                "functionCodeLine": "  transform.translation.y = pose.position.y;",
+                                "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                                "comment": "90 | 入力 Pose の position.y を Transform の translation.y にコピーしている。位置情報の y 成分を変換先へ移す処理。",
+                                "id": "f68ce1e135fbbf19ecf0e93f"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "transform.rotation",
+                                "functionCodeLine": "  transform.rotation = pose.orientation;",
+                                "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                                "comment": "94 | 入力 Pose の orientation を Transform の rotation にそのまま代入している。姿勢のクォータニオン情報を保持したまま Transform 形式へ変換する重要な処理。",
+                                "id": "9688668de68a2ddfea0bf63e"
+                            },
+                            "children": []
+                        },
+                        {
+                            "content": {
+                                "functionName": "return transform",
+                                "functionCodeLine": "  return transform;",
+                                "originalFilePath": "/workspaces/autoware/src/core/autoware_utils/autoware_utils_geometry/src/geometry/geometry.cpp",
+                                "comment": "89 | translation と rotation を設定し終えた Transform を呼び出し元へ返している。この戻り値によって Pose から Transform への変換結果が利用可能になる。",
+                                "id": "16e5eb6c02a6d16c9905299c"
+                            },
+                            "children": []
+                        }
+                    ]
+                },
+                {
+                    "content": {
+                        "functionName": "tf2::transformToEigen",
+                        "functionCodeLine": "  Eigen::Matrix4f tf_matrix = tf2::transformToEigen(transform).matrix().cast<float>();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/utils/utils.cpp",
+                        "comment": "95 | tf形式の変換情報をEigenで扱える変換表現へ変換する。Pose由来の変換を数値計算しやすい線形代数表現へ橋渡しする処理で、4x4行列生成の中核となる。",
+                        "id": "f71f00de63b4d7fd79e2251c"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "matrix",
+                        "functionCodeLine": "  Eigen::Matrix4f tf_matrix = tf2::transformToEigen(transform).matrix().cast<float>();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/utils/utils.cpp",
+                        "comment": "92 | Eigenの変換表現から4x4の同次変換行列を取り出す。回転と並進をまとめた行列表現を得る箇所であり、実際に occupancy_grid_map_fixed 側で点群座標変換に使いやすい形へしている。",
+                        "id": "1cbeed73fc10d7c32686c22a"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "cast<float>",
+                        "functionCodeLine": "  Eigen::Matrix4f tf_matrix = tf2::transformToEigen(transform).matrix().cast<float>();",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/utils/utils.cpp",
+                        "comment": "94 | 取り出した変換行列の要素型を float に変換する。Eigen::Matrix4f に格納するための型合わせであり、後続の点群処理で使う単精度行列として統一している。",
+                        "id": "6594d7d5a4e43055a05e7a56"
+                    },
+                    "children": []
+                },
+                {
+                    "content": {
+                        "functionName": "return",
+                        "functionCodeLine": "  return tf_matrix;",
+                        "originalFilePath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/utils/utils.cpp",
+                        "comment": "88 | 生成した4x4の変換行列を呼び出し元へ返す。この戻り値が updateWithPointCloud などの処理で座標変換行列として利用される前提を作っている。",
+                        "id": "72dedba6f2f36034d34a34fe"
+                    },
+                    "children": []
+                }
+            ]
+        }
+    ],
+    "purpose": "autoware_probabilistic_occupancy_grid_mapのpointcloud_based_occupancy_grid_mapのobstaclePointcloudCallbackのoccupancy_grid_map_fixedのupdateWithPointCloudの仕組みについて知りたい",
+    "rootPath": "/workspaces/autoware/src/universe/autoware_universe/perception/autoware_probabilistic_occupancy_grid_map/lib/costmap_2d/occupancy_grid_map_fixed.cpp",
+    "rootFunctionName": "void OccupancyGridMapFixedBlindSpot::updateWithPointCloud("
+}
