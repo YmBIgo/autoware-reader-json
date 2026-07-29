@@ -16,6 +16,13 @@ Autoware は数百の ROS 2 パッケージと多数のノードから構成さ�
 perception/autoware_ground_segmentation_cuda
 ```
 
+下記モジュールは、Ros2のノードではないので飛ばしています。
+
+```
+perception/tensorrt_classifier
+perception/tensorrt_common
+```
+
 ---
 
 ## Demo
