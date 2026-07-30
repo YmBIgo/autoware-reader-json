@@ -35,6 +35,8 @@ https://autoware.jp (まだ未公開)
 
 デバッグをご希望でしたら、レポジトリをcloneして、JSONを以下のホームページのアップロードすれば、デバッグできます。
 
+https://d1bn7mo12i1l5l.cloudfront.net/input
+
 ---
 
 ## Features
