@@ -33,6 +33,8 @@ perception/tensorrt_common
 https://autoware.jp (まだ未公開)
 ```
 
+デバッグをご希望でしたら、レポジトリをcloneして、JSONを以下のホームページのアップロードすれば、デバッグできます。
+
 ---
 
 ## Features
