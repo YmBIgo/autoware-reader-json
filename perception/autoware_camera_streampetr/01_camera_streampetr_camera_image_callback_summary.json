@@ -1,0 +1,26 @@
+[
+  {
+    "name": "update_camera_image->calculate_image_process_params",
+    "id": "200126011810112fd4901cf3"
+  }, 
+  {
+    "name": "update_camera_image->process_distorted_image->remap",
+    "id": "c2d489486827e0018991bd84"
+  },
+  {
+    "name": "update_camera_image->resizeAndExtractRoi",
+    "id": "4411fe82fb2c21b767014bd3"
+  },
+  {
+    "name": "step->prepare_infernce",
+    "id": "63f4e1dfa27749b0928a75eb"
+  },
+  {
+    "name": "step->inference->executeBackbone",
+    "id": "eec6b335ad3ba8d61b941654"
+  }, 
+  {
+    "name": "step->inference->executePtsHead",
+    "id": "c1ad84073733248e2b212423"
+  }
+]

@@ -1,0 +1,18 @@
+[
+  {
+    "name": "detect->preprocess->processImages",
+    "id": "50a3174727004d87637ca346"
+  },
+  {
+    "name": "detect->preprocess->generateSweepPoints",
+    "id": "920c60a30ebc0c1309636c64"
+  },
+  {
+    "name": "detect->inference->enqueueV3",
+    "id": "bc0836c52964c1f7da6efd6a"
+  },
+  {
+    "name": "detect->postprocess->generateDetectedBox3D",
+    "id": "7564a2959ceffc5fb9e74c5f"
+  }
+]

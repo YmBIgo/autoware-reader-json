@@ -1,4 +1,7 @@
 .DS_Store
 
+# .memo
+.memo
+
 # clangdインデックス失敗のため、外す
 autoware_ground_segmentation_cuda
