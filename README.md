@@ -21,6 +21,7 @@ perception/autoware_ground_segmentation_cuda
 ```
 perception/tensorrt_classifier
 perception/tensorrt_common
+perception/perception_utils
 ```
 
 ---
