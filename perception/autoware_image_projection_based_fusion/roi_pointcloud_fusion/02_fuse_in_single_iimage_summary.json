@@ -1,0 +1,10 @@
+[
+  {
+    "name": "fuse_on_single_image->updateOutputFusedObjects->closest_cluster",
+    "id": "3b06d38785224158e34ccb6f"
+  },
+  {
+    "name": "fuse_on_single_image->isPointInsideRoi",
+    "id": "b5467d759b9d4a505d4688b1"
+  }
+]

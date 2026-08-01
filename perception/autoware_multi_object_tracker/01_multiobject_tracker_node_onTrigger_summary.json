@@ -1,0 +1,30 @@
+[
+  {
+    "name": "onTrigger->runProcess->spawn",
+    "id": "d431a9117c1f3c6bd1b86313"
+  },
+  {
+    "name": "onTrigger->runProcess->update",
+    "id": "4e60e3c12f04c0092d93ae12"
+  },
+  {
+    "name": "onTrigger->runProcess->update->updateWithMeasurement",
+    "id": "62cd38fb5b38d6a798eced3f"
+  },
+  {
+    "name": "onTrigger->runProcess->predict",
+    "id": "2a27137a1962055fcad3dfa9"
+  },
+  {
+    "name": "onTrigger->runProcess->associate",
+    "id": "9d3e47b471960d4515584505"
+  },
+  {
+    "name": "onTrigger->runProcess->associate->calculateScoreMatrix->calculateScore",
+    "id": "4d4aaa674c2a94f4d7b41c34"
+  },
+  {
+    "name": "onTrigger->runProcess->associate->assign->maximizeLinearAssignment",
+    "id": "142310a40cc568f647652129"
+  }
+]

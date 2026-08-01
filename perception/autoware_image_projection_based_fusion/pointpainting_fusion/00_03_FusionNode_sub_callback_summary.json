@@ -1,0 +1,18 @@
+[
+  {
+    "name": "sub_callback->match_msg3d_to_collector",
+    "id": "d3c47bf79ef1b8f71276bed4"
+  },
+  {
+    "name": "sub_callback->fusion_callback->preprocess",
+    "id": "6278bb36fe0ed1b31cf0d387"
+  },
+  {
+    "name": "sub_callback->fusion_callback->fuse_on_single_image",
+    "id": "d6f8de6bcb37ffb73ac3f64b"
+  },
+  {
+    "name": "sub_callback->fusion_callback->postprocess",
+    "id": "041d874c8674b3f8e8eddbba"
+  }
+]

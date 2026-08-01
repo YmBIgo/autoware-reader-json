@@ -1,0 +1,22 @@
+[
+  {
+    "name": "rois_callback->match_rois_to_collector",
+    "id": "df98a6fee2d493f33164a44d"
+  },
+  {
+    "name": "rois_callback->fusion_callback->preprocess",
+    "id": "edb66e5698df86e92f1cfae8"
+  },
+  {
+    "name": "rois_callback->fusion_callback->fuse_on_single_image",
+    "id": "a425cda1bcf34f195c63baf5"
+  },
+  {
+    "name": "rois_callback->fusion_callback->postprocess",
+    "id": "2cafc009220b44d11ae940ac"
+  },
+  {
+    "name": "rois_callback->manage_collector_list",
+    "id": "982b0367e891244bd4eb8f5d"
+  }
+]

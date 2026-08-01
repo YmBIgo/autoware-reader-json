@@ -1,0 +1,14 @@
+[
+  {
+    "name": "fuse_on_single_image->fuseObjectsOnImage",
+    "id": "4ef5d54fcc673326e044b2ea"
+  },
+  {
+    "name": "fuse_on_single_image->generateDetectedObjectRoIs",
+    "id": "b98e8289c66cc13ebc7ef634"
+  },
+  {
+    "name": "fuse_on_single_image->getTransformStamped",
+    "id": "b1fe091ecf33aeda17c83616"
+  }
+]

@@ -1,0 +1,22 @@
+[
+  {
+    "name": "postprocess->detect->preprocess",
+    "id": "e3444c0bbf4b95c91cd83db5"
+  },
+  {
+    "name": "postprocess->detect->inference",
+    "id": "a44ca0b3d752ab107ce06947"
+  },
+  {
+    "name": "postprocess->detect->postprocess",
+    "id": "60cf0643c9f9d2307d930662"
+  },
+  {
+    "name": "postprocess->boxToDetectedObject",
+    "id": "ad0a7d31f1a1ee1ac1621192"
+  },
+  {
+    "name": "postprocess->iou_bev_nms_.apply",
+    "id": "9ea69a34b709a95c5a73b35d"
+  }
+]
