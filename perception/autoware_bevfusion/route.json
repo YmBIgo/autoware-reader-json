@@ -1,0 +1,7 @@
+[
+  "01_bevfusion_node_init.json",
+  "02_bevfusion_node_imageCallback.json",
+  "03_bevfusion_node_cameraInfoCallback.json",
+  "04_bevfusion_node_cloudCallback.json",
+  "05_bevfusion_nvinfer_setup.json"
+]

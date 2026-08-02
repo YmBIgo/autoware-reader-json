@@ -3,5 +3,8 @@
 # .memo
 .memo
 
+# 各種file生成のためのnode
+node
+
 # clangdインデックス失敗のため、外す
 autoware_ground_segmentation_cuda

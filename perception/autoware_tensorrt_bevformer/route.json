@@ -1,0 +1,15 @@
+[
+  "01_TRTBEVFormerNode.json",
+  "02_checkInitialization.json",
+  "03_1_callback.json",
+  "03_2_processCanbusWithTemporal.json",
+  "03_3_postprocess.json",
+  "03_4_box3DToDetectedObjects.json",
+  "03_5_publishDebugMarkers.json",
+  "04_1_ModulatedDeformableConv2dPluginCreator.json",
+  "04_2_ModulatedDeformableConv2dPlugin_enqueue.json",
+  "05_1_MultiScaleDeformableAttnPlugin.json",
+  "05_2_MultiScaleDeformableAttnPlugin_enqueue.json",
+  "06_1_RotatePlugin.json",
+  "06_2_RotatePlugin_enqueue.json"
+]

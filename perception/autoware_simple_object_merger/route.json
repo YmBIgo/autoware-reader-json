@@ -1,0 +1,9 @@
+[
+  "01_SimpleObjectMergerBase.json",
+  "02_onData.json",
+  "03_onSetParam.json",
+  "tracked_object_merger/01_approximateMerger.json",
+  "tracked_object_merger/02_onTimer.json",
+  "detected_object_merger/01_approximateMerger.json",
+  "detected_object_merger/02_onTimer.json"
+]

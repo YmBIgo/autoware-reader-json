@@ -1,0 +1,13 @@
+[
+  "unique/01_unique_enqueue.json",
+  "select_and_pad/01_select_and_pad_enqueue.json",
+  "segment_csr/01_segment_csr_enqueue.json",
+  "rotate/01_rotate_enqueue.json",
+  "quick_cumsum_cuda/01_quick_cumsum_cuda_enqueue.json",
+  "multi_scale_deformable_attention/01_multi_scale_deformable_attention_enqueue.json",
+  "indices_conv/01_indice_conv_enqueue.json",
+  "implicit_gemm/01_implicit_gemm_enqueue.json",
+  "get_indices_pairs_implicit_gemm/01_get_indices_pairs_implicit_gemm_enqueue.json",
+  "get_indices_pairs/01_get_indices_pairs_enqueue.json",
+  "argsort/01_argsort_enqueue.json"
+]

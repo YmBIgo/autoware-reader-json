@@ -1,0 +1,11 @@
+[
+  "scan_ground_filter/00_pointcloud_preprocessor_filter.json",
+  "scan_ground_filter/01_scan_ground_filter_ScanGroundFilterComponent.json",
+  "scan_ground_filter/02_scan_ground_filter_fast_filter.json",
+  "ray_ground_filter/00_pointcloud_preprocessor_filter.json",
+  "ray_ground_filter/01_ray_ground_filter_RayGroundFilterComponent.json",
+  "ray_ground_filter/02_ray_ground_filter_filter.json",
+  "ransac_ground_filter/00_pointcloud_preprocessor_filter.json",
+  "ransac_ground_filter/01_ransac_ground_filter_RANSACGroundFilterComponent.json",
+  "ransac_ground_filter/02_ransac_ground_filter_filter.json"
+]
