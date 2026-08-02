@@ -1,0 +1,14 @@
+[
+  {
+    "name": "TRTBEVFormerNode->initModel->buildEngineFromOnnx->loadPlugins",
+    "id": "141182e1ffd2a1d11333b0dd"
+  },
+  {
+    "name": "TRTBEVFormerNode->initModel->initilize->loadPlugins",
+    "id": "c85963b11027a1613573670c"
+  },
+  {
+    "name": "TRTBEVFormerNode->cameraCallback->calculateStaticLidar2EgoTransform",
+    "id": "ccbf0935328803407e849429"
+  }
+]

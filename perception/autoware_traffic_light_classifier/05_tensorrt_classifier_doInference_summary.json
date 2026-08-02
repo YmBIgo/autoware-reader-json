@@ -1,0 +1,10 @@
+[
+  {
+    "name": "doInference->preprocess->setInputShape",
+    "id": "0d73d0cec168e8f84264fa7e"
+  },
+  {
+    "name": "doInference->feedforwardAndDecode->enqueueV3",
+    "id": "6de77e997c2cf029b3b4f585"
+  }
+]

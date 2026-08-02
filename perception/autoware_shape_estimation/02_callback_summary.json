@@ -1,0 +1,22 @@
+[
+  {
+    "name": "callback->estimateShapeAndPose->estimateOriginalShapeAndPose->estimate",
+    "id": "4a4ade375eff107d709dbdee"
+  },
+  {
+    "name": "callback->estimateShapeAndPose->applyCorrector->correct",
+    "id": "e698b68bc7f324c014bd2c82"
+  },
+  {
+    "name": "callback->estimateShapeAndPose->applyFilter->filter",
+    "id": "6e67ad00593042f3ffb6be60"
+  },
+  {
+    "name": "callback->inference->preprocess",
+    "id": "df5aa42cb6fb45e6f8f1fa67"
+  },
+  {
+    "name": "callback->inference->feed_forward_and_decode->enqueueV3",
+    "id": "4affc759350000b021c3db96"
+  }
+]

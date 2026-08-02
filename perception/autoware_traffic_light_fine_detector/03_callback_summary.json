@@ -1,0 +1,22 @@
+[
+  {
+    "name": "callback->doMultiScaleInference->multiScalePreprocessGpu->setInputShape",
+    "id": "4686c6459407811bc872ba7b"
+  },
+  {
+    "name": "callback->doMultiScaleInference->multiScaleFeedforwardAndDecode->enqueueV3",
+    "id": "1864cca87efd403daf6a6783"
+  },
+  {
+    "name": "callback->doMultiScaleInference->multiScaleFeedforward->enqueueV3",
+    "id": "7424dcb426c4b3d098fb473f"
+  },
+  {
+    "name": "callback->detectionMatch->evalMatchScore",
+    "id": "f0ae2277c1cf4ed39d26f389"
+  },
+  {
+    "name": "callback->fitInFrame",
+    "id": "95227c89c298675c5d424099"
+  }
+]

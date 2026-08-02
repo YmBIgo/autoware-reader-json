@@ -1,0 +1,22 @@
+[
+  {
+    "name": "getTrafficSignals->doInference->enqueueV3",
+    "id": "938fd86c9a796c7daeff74f2"
+  },
+  {
+    "name": "getTrafficSignals->preprocess",
+    "id": "845a50f00bae9c8023105b18"
+  },
+  {
+    "name": "getTrafficSignals->decodeTlrOutput->runNms",
+    "id": "11755c575169d08049dc307a"
+  },
+  {
+    "name": "getTrafficSignals->convertBBoxInfoToLampElement",
+    "id": "e5a4e187f3ab411627a01acc"
+  },
+  {
+    "name": "getTrafficSignals->updateTrafficSignals",
+    "id": "aa947d7ccfd263cce65036d0"
+  }
+]

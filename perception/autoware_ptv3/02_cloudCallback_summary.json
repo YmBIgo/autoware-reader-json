@@ -1,0 +1,26 @@
+[
+  {
+    "name": "cloudCallback->segment->preProcess",
+    "id": "e12919df85aa3af900180003"
+  },
+  {
+    "name": "cloudCallback->segment->preProcess->generateFeatures",
+    "id": "9c9bf31f7297ba52bfea9c94"
+  },
+  {
+    "name": "cloudCallback->segment->inference->enqueueV3",
+    "id": "427ea2f81cf39292b747a1dc"
+  },
+  {
+    "name": "cloudCallback->segment->postProcess",
+    "id": "ca1acfcc174175676674f695"
+  },
+  {
+    "name": "cloudCallback->segment->postProcess->createSegmentationPointcloud",
+    "id": "b1229cd3835bc77d9bce5bdd"
+  },
+  {
+    "name": "cloudCallback->segment->postProcess->createFilteredPointcloud",
+    "id": "ea8897e9edb2372e518f74c8"
+  }
+]
