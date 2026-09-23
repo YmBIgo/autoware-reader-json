@@ -1,0 +1,103 @@
+[
+    {
+        "details": "点群の外れ値除去・地面分離、画像の補正、レーダー反射点の整形を行い認識用データを生成する",
+        "modules": [
+            "autoware_compare_map_segmentation",
+            "autoware_ground_segmantation",
+            "autoware_occupancy_grid_map_outlier_filter",
+            "autoware_rader_tracks_msgs_converter",
+            "autoware_raindrop_cluster_filter"
+        ]
+    },
+    {
+        "details": "点群クラスタリング、検出器出力、画像上の候補領域から車両・歩行者・自転車・障害物の観測候補を抽出する",
+        "modules": [
+            "autoware_bevfusion",
+            "autoware_camera_streampetr",
+            "autoware_euclidean_cluster",
+            "autoware_lidar_apollo_instance_segmentation",
+            "autoware_lidar_centerpoint",
+            "autoware_lidar_frnet",
+            "autoware_lidar_transfusion",
+            "autoware_ptv3",
+            "autoware_tensorrt_bevdet",
+            "autoware_tensorrt_bevformer",
+            "autoware_tensorrt_yolox"
+        ]
+    },
+    {
+        "details": "観測候補ごとに位置・寸法・向き・速度・物体種別・信頼度を推定し、センサ間で重複する観測を対応付ける",
+        "modules": [
+            "autoware_cluster_merger",
+            "autoware_detected_object_validation",
+            "autoware_image_object_locator",
+            "autoware_image_projection_based_fusion",
+            "autoware_object_merger",
+            "autoware_rader_fusion_to_detected_object",
+            "autoware_shape_estimation",
+            "autoware_simple_object_merger"
+        ]
+    },
+    {
+        "details": "現フレームの観測と過去フレームの物体軌跡を位置・速度・種別に基づいて関連付け、追跡IDを維持する",
+        "modules": [
+            "autoware_bytetrack",
+            "autoware_detection_by_tracker",
+            "autoware_multi_object_tracker",
+            "autoware_rader_object_tracker",
+            "autoware_tracking_object_merger"
+        ]
+    },
+    {
+        "details": "追跡中の物体状態をフィルタリングして位置・速度・加速度・姿勢を更新し、未観測物体の維持・消滅判定を行う",
+        "modules": [
+            "autoware_multi_object_tracker",
+            "autoware_rader_object_tracker",
+            "autoware_bytetrack"
+        ]
+    },
+    {
+        "details": "HDマップ上の信号機位置をカメラ画像へ投影して認識対象領域を定め、灯色・矢印・点灯状態・信頼度を判定する",
+        "modules": [
+            "autoware_crosswalk_traffic_light_estimator",
+            "autoware_traffic_light_arbiter",
+            "autoware_traffic_light_category_merger",
+            "autoware_traffic_light_classifier",
+            "autoware_traffic_light_fine_detector",
+            "autoware_traffic_light_map_based_detector",
+            "autoware_traffic_light_multi_camera_fusion",
+            "autoware_traffic_light_occlusion_predictor",
+            "autoware_traffic_light_selector"
+        ]
+    },
+    {
+        "details": "地面点群・車線境界・路肩・縁石・占有物体を統合して走行可能領域と占有状態を推定し、追跡物体・信号状態とともに周辺環境モデルとして出力する",
+        "modules": [
+            "autoware_probabilistic_occupancy_grid_map"
+        ]
+    },
+    {
+        "details": "追跡物体の位置・速度・道路構造などから、数秒先の移動軌跡や行動を予測する",
+        "modules": [
+            "autoware_map_based_prediction",
+            "autoware_simple_prediction"
+        ]
+    },
+    {
+        "details": "検出・追跡・予測結果を並び替え、不要属性を削除し、軌跡を補正するなど、後段が利用しやすい形式へ整える",
+        "modules": [
+            "autoware_detected_object_feature_remover",
+            "autoware_object_sorter",
+            "autoware_predicted_path_postprocess"
+        ]
+    },
+    {
+        "details": "その他",
+        "modules": [
+            "autoware_elevation_map_loader",
+            "autoware_rader_tracks_msgs_converter",
+            "autoware_tensorrt_plugins",
+            "autoware_traffic_light_visualization"
+        ]
+    }
+]
